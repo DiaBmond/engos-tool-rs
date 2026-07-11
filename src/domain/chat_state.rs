@@ -1,9 +1,10 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatState {
     Idle,
-    VocabGuess,
+    VocabGuessing(u8),
+    VocabReviewing(u8),
     SentenceDraft,
-    RoleplayActive,
+    Roleplay { level: u8, turn_count: u8 },
 }
 
 impl ChatState {
