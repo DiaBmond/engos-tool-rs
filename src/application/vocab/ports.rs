@@ -1,0 +1,15 @@
+use std::future::Future;
+use crate::domain::vocab::Vocab;
+use crate::domain::user_vocab::UserVocab;
+
+pub trait VocabRepository: Send + Sync {
+    fn save_vocab(&self, vocab: &Vocab) -> impl Future<Output = Result<(), String>> + Send;
+
+    fn upsert_user_vocab(&self, user_vocab: &UserVocab) -> impl Future<Output = Result<(), String>> + Send;
+
+    fn get_review_vocabs(&self, user_id: &str, limit: usize) -> impl Future<Output = Result<Vec<(Vocab, UserVocab)>, String>> + Send;
+}
+
+pub trait VocabAiPort: Send + Sync {
+    fn generate_three_vocabs(&self) -> impl Future<Output = Result<Vec<Vocab>, String>> + Send;
+}

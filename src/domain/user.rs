@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone)]
 pub struct User {
     pub user_id: String,
-    pub current_level: u8,
-    pub progress_stack: u8,
+    pub current_level: u8, //roleplay
+    pub progress_stack: u8, //vocab
     pub created_at: DateTime<Utc>,
 }
 
@@ -14,6 +14,7 @@ impl User {
             user_id,
             current_level: 1,
             progress_stack: 0,
+            created_at: chrono::Utc::now(),
         }
     }
 
