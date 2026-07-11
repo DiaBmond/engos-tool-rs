@@ -26,15 +26,10 @@ impl User {
 
     pub fn add_progress(&mut self) -> bool {
         self.progress_stack += 1;
-        
-        if self.progress_stack >= 5 {
-            self.level_up();
-            return true;
-        }
         false
     }
 
-    fn level_up(&mut self) {
+    pub fn level_up(&mut self) {
         if self.current_level < 4 {
             self.current_level += 1;
         }
