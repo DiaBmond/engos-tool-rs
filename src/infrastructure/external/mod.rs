@@ -1,2 +1,2 @@
-pub mod gemini_api;
+pub mod gemini;
 pub mod line_api;
