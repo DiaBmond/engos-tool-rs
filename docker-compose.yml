@@ -15,5 +15,15 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
 
+  redis_cache:
+    image: redis:7-alpine
+    container_name: eng_os_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
 volumes:
   postgres_data:
+  redis_data: 
