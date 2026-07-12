@@ -1,2 +1,2 @@
-pub mod postgres_repo;
+pub mod postgres;
 pub mod redis_repo;
