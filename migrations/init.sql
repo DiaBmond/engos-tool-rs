@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS vocabs (
     vocab_id VARCHAR(36) PRIMARY KEY,
     word VARCHAR(255) NOT NULL,
     definition TEXT NOT NULL,
-    category VARCHAR(50) NOT NULL CHECK (category IN ('Daily', 'Native', 'Tech'))
+    category VARCHAR(50) NOT NULL CHECK (category IN ('Daily', 'Native', 'Tech')),
+    UNIQUE (word, category)
 );
 
 CREATE TABLE IF NOT EXISTS user_vocabs (
