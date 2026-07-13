@@ -28,7 +28,7 @@ impl GeminiClient {
         let api_key = env::var("GEMINI_API_KEY")
             .expect("The GEMINI_API_KEY was not found in the .env file.");
         let model = env::var("GEMINI_MODEL")
-            .unwrap_or_else(|_| "gemini-3.5-flash".to_string());
+            .unwrap_or_else(|_| "gemini-3.1-flash-lite".to_string());
 
         Self::new(api_key, model)
     }
