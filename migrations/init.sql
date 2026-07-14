@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
     user_id VARCHAR(255) PRIMARY KEY,
-    progress_stack SMALLINT NOT NULL DEFAULT 0 CHECK (progress_stack >= 0),
+    progress_stack INT NOT NULL DEFAULT 0 CHECK (progress_stack >= 0),
     current_level SMALLINT NOT NULL DEFAULT 1 CHECK (current_level BETWEEN 1 AND 4),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

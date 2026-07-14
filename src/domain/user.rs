@@ -3,8 +3,8 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone)]
 pub struct User {
     pub user_id: String,
-    pub current_level: u8, //roleplay
-    pub progress_stack: u8, //vocab
+    pub current_level: u8,
+    pub progress_stack: u16,
     pub created_at: DateTime<Utc>,
 }
 
@@ -14,25 +14,25 @@ impl User {
             user_id,
             current_level: 1,
             progress_stack: 0,
-            created_at: chrono::Utc::now(),
+            created_at: Utc::now(),
         }
     }
 
-    pub fn decrease_progress(&mut self) {
+    pub fn fail_roleplay(&mut self) {
         if self.progress_stack > 0 {
             self.progress_stack -= 1;
         }
     }
 
-    pub fn add_progress(&mut self) -> bool {
+    pub fn pass_roleplay(&mut self) -> bool {
         self.progress_stack += 1;
-        false
-    }
 
-    pub fn level_up(&mut self) {
-        if self.current_level < 4 {
+        if self.current_level < 4 && self.progress_stack >= 5 {
             self.current_level += 1;
+            self.progress_stack = 0; 
+            return true;
         }
-        self.progress_stack = 0;
+
+        false
     }
 }
