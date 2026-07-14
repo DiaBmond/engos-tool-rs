@@ -6,6 +6,9 @@ use crate::infrastructure::database::postgres::sentence_repository::PostgresSent
 use crate::infrastructure::database::redis_repo::RedisChatStateRepository;
 use crate::infrastructure::external::gemini::client::GeminiClient;
 use crate::infrastructure::external::line_api::LineClient;
+
+use crate::application::vocab::vocab_service::VocabService;
+use crate::application::sentence::sentence_service::SentenceService;
 use crate::application::roleplay::roleplay_service::RoleplayService;
 
 #[derive(Clone)]
@@ -17,6 +20,9 @@ pub struct AppState {
     pub chat_state_repo: Arc<RedisChatStateRepository>,
     pub gemini_client: Arc<GeminiClient>,
     pub line_client: Arc<LineClient>,
+    
+    pub vocab_service: Arc<VocabService<PostgresVocabRepository, GeminiClient>>,
+    pub sentence_service: Arc<SentenceService<PostgresSentenceRepository, GeminiClient>>,
     pub roleplay_service: Arc<RoleplayService<GeminiClient>>,
 }
 
@@ -32,7 +38,20 @@ impl AppState {
         let sentence_repo = Arc::new(PostgresSentenceRepository::new(pg_pool.clone()));
         
         let gemini_arc = Arc::new(gemini_client);
-        let roleplay_service = Arc::new(RoleplayService::new(gemini_arc.as_ref().clone()));
+
+        let vocab_service = Arc::new(VocabService::new(
+            PostgresVocabRepository::new(pg_pool.clone()),
+            gemini_arc.as_ref().clone(),
+        ));
+
+        let sentence_service = Arc::new(SentenceService::new(
+            PostgresSentenceRepository::new(pg_pool.clone()),
+            gemini_arc.as_ref().clone(),
+        ));
+
+        let roleplay_service = Arc::new(RoleplayService::new(
+            gemini_arc.as_ref().clone(),
+        ));
 
         Self {
             pg_pool,
@@ -42,6 +61,8 @@ impl AppState {
             chat_state_repo: Arc::new(chat_state_repo),
             gemini_client: gemini_arc,
             line_client: Arc::new(line_client),
+            vocab_service,
+            sentence_service,
             roleplay_service,
         }
     }
