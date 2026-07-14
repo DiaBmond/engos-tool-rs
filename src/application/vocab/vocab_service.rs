@@ -1,6 +1,7 @@
+use super::dto::VocabEvaluation;
 use super::ports::{VocabAiPort, VocabRepository};
 use crate::domain::user_vocab::UserVocab;
-use crate::domain::vocab::Vocab;
+use crate::domain::vocab::{Vocab, VocabCategory};
 
 pub struct VocabService<R: VocabRepository, A: VocabAiPort> {
     repo: R,
@@ -12,18 +13,18 @@ impl<R: VocabRepository, A: VocabAiPort> VocabService<R, A> {
         Self { repo, ai }
     }
 
-    pub async fn start_new_round(&self) -> Result<Vec<Vocab>, String> {
-        let vocabs = self.ai.generate_three_vocabs().await?;
+    pub async fn start_new_round(&self, category: VocabCategory) -> Result<Vec<Vocab>, String> {
+        let vocabs = self.ai.generate_vocabs_by_category(category, 3).await?;
         
         if vocabs.len() != 3 {
-            return Err("The AI ​​didn't generate all three words as specified.".to_string());
+            return Err("The AI didn't generate all three words as specified.".to_string());
         }
 
         Ok(vocabs)
     }
 
-    pub fn check_answer(&self, target_word: &str, user_answer: &str) -> bool {
-        target_word.trim().eq_ignore_ascii_case(user_answer.trim())
+    pub async fn check_answer(&self, target_vocab: &Vocab, user_answer: &str) -> Result<VocabEvaluation, String> {
+        self.ai.evaluate_vocab_guess(target_vocab, user_answer).await
     }
 
     pub async fn save_completed_round(
@@ -33,11 +34,9 @@ impl<R: VocabRepository, A: VocabAiPort> VocabService<R, A> {
     ) -> Result<(), String> {
         for vocab in completed_vocabs {
             self.repo.save_vocab(&vocab).await?;
-
             let user_vocab = UserVocab::new(user_id.to_string(), vocab.vocab_id.clone());
             self.repo.upsert_user_vocab(&user_vocab).await?;
         }
-
         Ok(())
     }
 

@@ -1,13 +1,7 @@
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
 use crate::domain::chat_state::ChatState;
-use std::future::Future;
-
-pub trait ChatStateRepository: Send + Sync {
-    fn get_state(&self, user_id: &str) -> impl Future<Output = Result<ChatState, String>> + Send;
-    fn set_state(&self, user_id: &str, state: &ChatState, ttl_seconds: u64) -> impl Future<Output = Result<(), String>> + Send;
-    fn clear_state(&self, user_id: &str) -> impl Future<Output = Result<(), String>> + Send;
-}
+use crate::application::user::ports::ChatStateRepository;
 
 #[derive(Clone)]
 pub struct RedisChatStateRepository {

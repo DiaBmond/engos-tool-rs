@@ -29,13 +29,17 @@ impl<A: RoleplayAiPort> RoleplayService<A> {
         user: &mut User,
         scenario: &RoleplayScenario,
         chat_history: &[(String, String)],
-    ) -> Result<RoleplayEvaluation, String> {
+    ) -> Result<(RoleplayEvaluation, bool), String> {
         let eval = self.ai.evaluate_session(scenario, chat_history).await?;
 
+        let mut is_leveled_up = false;
+
         if eval.is_passed {
-            user.level_up();
+            is_leveled_up = user.pass_roleplay();
+        } else {
+            user.fail_roleplay();
         }
 
-        Ok(eval)
+        Ok((eval, is_leveled_up))
     }
 }

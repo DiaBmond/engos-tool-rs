@@ -30,7 +30,7 @@ impl UserRepository for PostgresUserRepository {
         if let Some(r) = row {
             Ok(Some(User {
                 user_id: r.user_id,
-                progress_stack: r.progress_stack as u8,
+                progress_stack: r.progress_stack as u16,
                 current_level: r.current_level as u8,
                 created_at: r.created_at.unwrap_or_else(chrono::Utc::now), 
             }))
@@ -50,7 +50,7 @@ impl UserRepository for PostgresUserRepository {
                 current_level = EXCLUDED.current_level
             "#,
             user.user_id,
-            user.progress_stack as i16,
+            user.progress_stack as i32,
             user.current_level as i16,
             user.created_at 
         )

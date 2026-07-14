@@ -98,4 +98,31 @@ impl VocabRepository for PostgresVocabRepository {
 
         Ok(result)
     }
+
+    async fn find_vocab_by_id(&self, vocab_id: &str) -> Result<Option<Vocab>, String> {
+        let row = sqlx::query!(
+            r#"
+            SELECT vocab_id, word, definition, category
+            FROM vocabs
+            WHERE vocab_id = $1
+            "#,
+            vocab_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| format!("Database error while fetching vocab by id: {}", e))?;
+
+        if let Some(r) = row {
+            let category = match r.category.as_str() {
+                "Daily" => VocabCategory::Daily,
+                "Native" => VocabCategory::Native,
+                "Tech" => VocabCategory::Tech,
+                _ => VocabCategory::Daily,
+            };
+
+            Ok(Some(Vocab::new(r.vocab_id, r.word, r.definition, category)))
+        } else {
+            Ok(None)
+        }
+    }
 }
