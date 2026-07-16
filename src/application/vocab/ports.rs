@@ -1,5 +1,5 @@
 use std::future::Future;
-use crate::domain::vocab::{Vocab, VocabCategory};
+use crate::domain::vocab::Vocab;
 use crate::domain::user_vocab::UserVocab;
 use crate::application::vocab::dto::VocabEvaluation;
 
@@ -14,7 +14,7 @@ pub trait VocabRepository: Send + Sync {
 }
 
 pub trait VocabAiPort: Send + Sync {
-    fn generate_vocabs_by_category(&self, category: VocabCategory, count: usize) -> impl Future<Output = Result<Vec<Vocab>, String>> + Send;
+    fn generate_three_vocabs(&self) -> impl Future<Output = Result<Vec<Vocab>, String>> + Send;
     
     fn evaluate_vocab_guess(&self, vocab: &Vocab, user_guess: &str) -> impl Future<Output = Result<VocabEvaluation, String>> + Send;
 }

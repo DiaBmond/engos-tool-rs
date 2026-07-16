@@ -1,4 +1,5 @@
-#[derive(Debug, Clone)]
+use serde::{Serialize, Deserialize};
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoleplayScenario {
     pub role_name: String,
     pub setting: String,

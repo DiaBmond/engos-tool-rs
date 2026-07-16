@@ -1,7 +1,7 @@
 use super::dto::VocabEvaluation;
 use super::ports::{VocabAiPort, VocabRepository};
 use crate::domain::user_vocab::UserVocab;
-use crate::domain::vocab::{Vocab, VocabCategory};
+use crate::domain::vocab::Vocab;
 
 pub struct VocabService<R: VocabRepository, A: VocabAiPort> {
     repo: R,
@@ -13,8 +13,8 @@ impl<R: VocabRepository, A: VocabAiPort> VocabService<R, A> {
         Self { repo, ai }
     }
 
-    pub async fn start_new_round(&self, category: VocabCategory) -> Result<Vec<Vocab>, String> {
-        let vocabs = self.ai.generate_vocabs_by_category(category, 3).await?;
+    pub async fn start_new_round(&self) -> Result<Vec<Vocab>, String> {
+        let vocabs = self.ai.generate_three_vocabs().await?;
         
         if vocabs.len() != 3 {
             return Err("The AI didn't generate all three words as specified.".to_string());

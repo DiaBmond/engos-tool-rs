@@ -73,27 +73,6 @@ impl GeminiClient {
             .ok_or_else(|| format!("Invalid response structure from Gemini: {}", res))
     }
 
-    // pub(crate) async fn generate_text(
-    //     &self,
-    //     system_instruction: Option<&str>,
-    //     user_prompt: &str,
-    // ) -> Result<String, String> {
-    //     let mut body = json!({
-    //         "contents": [{
-    //             "parts": [{ "text": user_prompt }]
-    //         }]
-    //     });
-
-    //     if let Some(sys) = system_instruction {
-    //         body["systemInstruction"] = json!({
-    //             "parts": [{ "text": sys }]
-    //         });
-    //     }
-
-    //     let response_json = self.call_api(&body).await?;
-    //     self.extract_text_from_response(&response_json)
-    // }
-
     pub(crate) async fn generate_json<T: DeserializeOwned>(
         &self,
         system_instruction: Option<&str>,

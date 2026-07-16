@@ -15,15 +15,14 @@ impl SentenceAiPort for GeminiClient {
             r#"Analyze the following English sentence drafted by the user: "{}"
 
             CRITICAL RULES for evaluation:
-            1. If the sentence has grammatical errors, spelling mistakes, unnatural word choice, or incorrect tenses:
+            1. Focus ONLY on major grammatical errors, spelling mistakes, tense usage, and natural sentence structures.
+            2. DO NOT be overly pedantic or strict about minor capitalization after commas (e.g., "Hi, My name" is acceptable) or minor punctuation unless it completely changes the meaning.
+            3. If the sentence has MAJOR errors:
                - Set "is_passed": false
-               - For "feedback": Explain the mistake and provide a hint/tip in simple Thai. **DO NOT provide the correct sentence or direct answer.** Let the user figure out how to fix it themselves.
-
-            2. If the sentence is grammatically correct and sounds natural to a native speaker:
+               - For "feedback": Explain the mistake and provide a hint/tip in simple Thai. **DO NOT provide the correct sentence or direct answer.**
+            4. If the sentence is generally correct and understandable to a native speaker (even with minor informalities):
                - Set "is_passed": true
-               - For "feedback": Give a brief praise in Thai and provide "Native Tricks" or alternative ways a native speaker would say this sentence to sound more professional (you can fully give examples and corrected forms in this case).
-
-            Respond strictly as a JSON object: {{ "is_passed": bool, "feedback": string }}"#,
+               - For "feedback": Give a brief praise in Thai and provide "Native Tricks" or alternative ways a native speaker would say this."#,
             current_text
         );
 

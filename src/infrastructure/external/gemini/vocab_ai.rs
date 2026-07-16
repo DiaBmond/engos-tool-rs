@@ -13,26 +13,19 @@ struct GeminiVocabResponse {
 }
 
 impl VocabAiPort for GeminiClient {
-    async fn generate_vocabs_by_category(&self, category: VocabCategory, count: usize) -> Result<Vec<Vocab>, String> {
-        let cat_str = format!("{:?}", category);
-        let prompt = format!(
-            r#"Generate {} English vocabulary words belonging to the category: "{}".
+    async fn generate_three_vocabs(&self) -> Result<Vec<Vocab>, String> {
+        let prompt = r#"Generate exactly 3 English vocabulary words, one from each of the following categories:
+            1. "Daily": Common words used in everyday conversation.
+            2. "Native": Natural expressions, idioms, or phrasal verbs used by native speakers.
+            3. "Tech": Professional terms specific to software development and IT.
 
-            Definition of categories:
-            - Daily: Common words used in everyday conversation.
-            - Native: Natural expressions, idioms, or phrasal verbs used by native speakers.
-            - Tech: Professional terms and jargon specific to software development and IT.
-
-            Return the result as a JSON array of objects with the following fields: 
-            "word" (string), "definition" (string), "category" (string).
-            Ensure the "category" value matches one of the categories provided above exactly."#,
-            count, cat_str
-        );
+            Return the result as a JSON array of objects with fields: "word", "definition", "category".
+            Ensure the "category" value matches "Daily", "Native", or "Tech" exactly."#;
 
         let raw_vocabs: Vec<GeminiVocabResponse> = self
             .generate_json(
                 Some("You are an expert English teacher for developers."),
-                &prompt,
+                prompt,
             )
             .await?;
 

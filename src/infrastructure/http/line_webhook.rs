@@ -8,7 +8,6 @@ use serde_json::Value;
 
 use crate::domain::chat_state::ChatState;
 use crate::domain::user::User;
-use crate::domain::vocab::VocabCategory;
 
 use crate::application::user::ports::UserRepository;
 use crate::application::vocab::ports::VocabRepository;
@@ -60,7 +59,8 @@ async fn process_user_message(
 
     let current_state = state.chat_state_repo.get_state(user_id).await?;
 
-    if text == "ยกเลิก" || text == "ออก" || text == "exit" {
+    let text_lower = text.to_lowercase();
+    if text_lower == "ยกเลิก" || text_lower == "ออก" || text_lower == "exit" {
         state.chat_state_repo.clear_state(user_id).await?;
         return state.line_client.reply_text(
             reply_token, 
@@ -70,8 +70,8 @@ async fn process_user_message(
 
     match current_state {
         ChatState::Idle => handle_idle_state(state, &user, reply_token, text).await,
-        ChatState::VocabGuessing { target_vocab_id, attempt } => {
-            handle_vocab_guessing(state, &user, reply_token, text, target_vocab_id, attempt).await
+        ChatState::VocabGuessing { vocab_ids, current_index, attempt } => {
+            handle_vocab_guessing(state, &mut user, reply_token, text, vocab_ids, current_index, attempt).await
         },
         ChatState::VocabReviewing { review_list, current_index } => {
             handle_vocab_reviewing(state, &user, reply_token, text, review_list, current_index).await
@@ -79,8 +79,8 @@ async fn process_user_message(
         ChatState::SentenceDraft { sentence_id, fix_count } => {
             handle_sentence_draft(state, &user, reply_token, text, sentence_id, fix_count).await
         },
-        ChatState::Roleplay { level, turn_count } => {
-            handle_roleplay_turn(state, &mut user, reply_token, text, level, turn_count).await
+        ChatState::Roleplay { level, turn_count, scenario, history } => {
+            handle_roleplay_turn(state, &mut user, reply_token, text, level, turn_count, scenario, history).await
         },
     }
 }
@@ -93,18 +93,24 @@ async fn handle_idle_state(
 ) -> Result<(), String> {
     match text {
         "1" | "ทายศัพท์" | "vocab" => {
-            let vocabs = state.vocab_service.start_new_round(VocabCategory::Tech).await?; 
+            let vocabs = state.vocab_service.start_new_round().await?; 
             state.vocab_service.save_completed_round(&user.user_id, vocabs.clone()).await?;
+
+            let vocab_ids: Vec<String> = vocabs.iter().map(|v| v.vocab_id.clone()).collect();
 
             if let Some(first_vocab) = vocabs.first() {
                 state.chat_state_repo.set_state(
                     &user.user_id, 
-                    &ChatState::VocabGuessing { target_vocab_id: first_vocab.vocab_id.clone(), attempt: 1 }, 
+                    &ChatState::VocabGuessing { 
+                        vocab_ids, 
+                        current_index: 0, 
+                        attempt: 1 
+                    }, 
                     3600
                 ).await?;
 
                 let msg = format!(
-                    "🔥 โหมดทายคำศัพท์เริ่มแล้ว!\n\n💡 คำแปล: \"{}\"\n📂 หมวดหมู่: {:?}\n\n👉 พิมพ์คำศัพท์ภาษาอังกฤษส่งมาได้เลยครับ!",
+                    "🔥 โหมดทายคำศัพท์เริ่มแล้ว! (ข้อที่ 1/3)\n\n💡 คำแปล: \"{}\"\n📂 หมวดหมู่: {:?}\n\n👉 พิมพ์คำศัพท์ภาษาอังกฤษส่งมาได้เลยครับ!",
                     first_vocab.definition, first_vocab.category
                 );
                 state.line_client.reply_text(reply_token, &msg).await?;
@@ -142,9 +148,15 @@ async fn handle_idle_state(
         },
         "4" | "โรลเพลย์" | "roleplay" => {
             let scenario = state.roleplay_service.start_new_session(user).await?;
+            
             state.chat_state_repo.set_state(
                 &user.user_id, 
-                &ChatState::Roleplay { level: user.current_level, turn_count: 1 }, 
+                &ChatState::Roleplay { 
+                    level: user.current_level, 
+                    turn_count: 1,
+                    scenario: scenario.clone(),
+                    history: vec![]
+                }, 
                 3600
             ).await?;
 
@@ -164,28 +176,58 @@ async fn handle_idle_state(
 
 async fn handle_vocab_guessing(
     state: &AppState,
-    user: &User,
+    user: &mut User,
     reply_token: &str,
     text: &str,
-    target_vocab_id: String,
+    vocab_ids: Vec<String>,
+    current_index: usize,
     attempt: u8,
 ) -> Result<(), String> {
-    let vocab = state.vocab_repo.find_vocab_by_id(&target_vocab_id).await?
+    let current_vocab_id = &vocab_ids[current_index];
+    let vocab = state.vocab_repo.find_vocab_by_id(current_vocab_id).await?
         .ok_or_else(|| "Vocab not found".to_string())?;
 
     let eval = state.vocab_service.check_answer(&vocab, text).await?;
 
     if eval.is_correct {
-        state.chat_state_repo.clear_state(&user.user_id).await?;
-        let success_msg = format!("✅ ถูกต้องยอดเยี่ยมครับ!\n🎯 คำศัพท์คือ: \"{}\"\n⭐ Feedback: {}\n\n(กลับสู่เมนูหลักเรียบร้อย เลือกโหมดใหม่ได้เลยครับ)", vocab.word, eval.feedback);
-        state.line_client.reply_text(reply_token, &success_msg).await?;
+        let feedback_msg = format!("✅ ถูกต้องยอดเยี่ยมครับ!\n🎯 คำศัพท์คือ: \"{}\"\n⭐ Feedback: {}", vocab.word, eval.feedback);
+        let next_index = current_index + 1;
+
+        if next_index < vocab_ids.len() {
+            let next_vocab_id = &vocab_ids[next_index];
+            let next_vocab = state.vocab_repo.find_vocab_by_id(next_vocab_id).await?
+                .ok_or_else(|| "Next vocab not found".to_string())?;
+
+            state.chat_state_repo.set_state(
+                &user.user_id,
+                &ChatState::VocabGuessing { vocab_ids, current_index: next_index, attempt: 1 },
+                3600
+            ).await?;
+
+            let next_msg = format!(
+                "{}\n\n------------------\n🔥 คำศัพท์ข้อต่อไป (ข้อที่ {}/3)\n💡 คำแปล: \"{}\"\n📂 หมวดหมู่: {:?}\n\n👉 พิมพ์คำทายส่งมาเลยครับ!",
+                feedback_msg, next_index + 1, next_vocab.definition, next_vocab.category
+            );
+            state.line_client.reply_text(reply_token, &next_msg).await?;
+        } else {
+            user.progress_stack += 1; 
+            state.user_repo.save(user).await?;
+            state.chat_state_repo.clear_state(&user.user_id).await?;
+
+            let final_msg = format!(
+                "{}\n\n🏆 ยอดเยี่ยม! ทายคำศัพท์ครบ 3 ข้อเรียบร้อยแล้วครับ!\n📊 แต้มสะสมรอบการฝึกปัจจุบัน: {} รอบ\n\n(กลับสู่เมนูหลักเรียบร้อย พิมพ์เลือกโหมดใหม่ได้เลยครับ)",
+                feedback_msg, user.progress_stack
+            );
+            state.line_client.reply_text(reply_token, &final_msg).await?;
+        }
     } else {
         state.chat_state_repo.set_state(
             &user.user_id,
-            &ChatState::VocabGuessing { target_vocab_id, attempt: attempt + 1 },
+            &ChatState::VocabGuessing { vocab_ids, current_index, attempt: attempt + 1 },
             3600
         ).await?;
-        let fail_msg = format!("❌ ยังไม่ใช่ครับ! (ทายไปแล้ว {} ครั้ง)\n💡 คำใบ้จาก AI: {}\n\n👉 ลองเดาใหม่อีกครั้งส่งมาได้เลยครับ!", attempt, eval.feedback);
+        
+        let fail_msg = format!("❌ ยังไม่ใช่ครับ! (ทายข้อนี้ไปแล้ว {} ครั้ง)\n💡 คำใบ้จาก AI: {}\n\n👉 ลองเดาใหม่อีกครั้งส่งมาได้เลยครับ!", attempt, eval.feedback);
         state.line_client.reply_text(reply_token, &fail_msg).await?;
     }
     Ok(())
@@ -272,27 +314,30 @@ async fn handle_roleplay_turn(
     text: &str,
     level: u8,
     turn_count: u8,
+    scenario: crate::application::roleplay::dto::RoleplayScenario, 
+    mut history: Vec<(String, String)>,                          
 ) -> Result<(), String> {
-    let current_scenario = state.roleplay_service.start_new_session(user).await?; 
-    let chat_history = vec![];
-
+    
     if turn_count < 5 { 
-        let reply = state.roleplay_service.handle_turn(&current_scenario, &chat_history, text).await?;
+        let reply = state.roleplay_service.handle_turn(&scenario, &history, text).await?;
         let next_turn = turn_count + 1;
         
+        history.push((text.to_string(), reply.ai_message.clone()));
+
         state.chat_state_repo.set_state(
             &user.user_id, 
-            &ChatState::Roleplay { level, turn_count: next_turn }, 
+            &ChatState::Roleplay { level, turn_count: next_turn, scenario, history }, 
             3600
         ).await?;
 
         let msg = format!(
-            "💬 [Turn {}/5] AI Roleplay:\n\"{}\"\n\n💡 คำใบ้ช่วยใบ้ตอบเทิร์นถัดไป: {}\n\n👉 พิมพ์ตอบกลับอังกฤษส่งมาได้เลยครับ!",
+            "💬 [Turn {}/5] AI Roleplay:\n\"{}\"\n\n💡 คำใบ้ตอบเทิร์นถัดไป: {}\n\n👉 พิมพ์ตอบกลับอังกฤษส่งมาได้เลยครับ!",
             next_turn, reply.ai_message, reply.hint.as_deref().unwrap_or("-")
         );
         state.line_client.reply_text(reply_token, &msg).await?;
     } else {
-        let (eval, is_leveled_up) = state.roleplay_service.finish_session(user, &current_scenario, &chat_history).await?;
+        history.push((text.to_string(), "".to_string()));
+        let (eval, is_leveled_up) = state.roleplay_service.finish_session(user, &scenario, &history).await?;
         
         state.user_repo.save(user).await?;
         state.chat_state_repo.clear_state(&user.user_id).await?;

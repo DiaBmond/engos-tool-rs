@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
+use crate::application::roleplay::dto::RoleplayScenario;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChatState {
     Idle,
     
     VocabGuessing {
-        target_vocab_id: String,
+        vocab_ids: Vec<String>,
+        current_index: usize,
         attempt: u8,
     },
     
@@ -22,6 +24,8 @@ pub enum ChatState {
     Roleplay {
         level: u8,
         turn_count: u8,
+        scenario: RoleplayScenario,
+        history: Vec<(String, String)>,
     },
 }
 
@@ -36,5 +40,9 @@ impl ChatState {
 
     pub fn is_reviewing(&self) -> bool {
         matches!(self, Self::VocabReviewing { .. })
+    }
+
+    pub fn is_roleplay(&self) -> bool {
+        matches!(self, Self::Roleplay { .. })
     }
 }
