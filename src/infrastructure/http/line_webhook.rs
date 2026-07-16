@@ -93,8 +93,7 @@ async fn handle_idle_state(
 ) -> Result<(), String> {
     match text {
         "1" | "ทายศัพท์" | "vocab" => {
-            let vocabs = state.vocab_service.start_new_round().await?; 
-            state.vocab_service.save_completed_round(&user.user_id, vocabs.clone()).await?;
+            let vocabs = state.vocab_service.start_new_round(&user.user_id).await?; 
 
             let vocab_ids: Vec<String> = vocabs.iter().map(|v| v.vocab_id.clone()).collect();
 

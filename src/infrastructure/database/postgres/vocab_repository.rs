@@ -15,29 +15,38 @@ impl PostgresVocabRepository {
 
 impl VocabRepository for PostgresVocabRepository {
     
-    async fn save_vocab(&self, vocab: &Vocab) -> Result<(), String> {
+    async fn save_vocab(&self, vocab: &Vocab) -> Result<Vocab, String> {
         let category_str = match vocab.category {
             VocabCategory::Daily => "Daily",
             VocabCategory::Native => "Native",
             VocabCategory::Tech => "Tech",
         };
 
-        sqlx::query!(
+        let row = sqlx::query!(
             r#"
             INSERT INTO vocabs (vocab_id, word, definition, category)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (word, category) DO NOTHING
+            ON CONFLICT (word, category) DO UPDATE 
+            SET definition = EXCLUDED.definition
+            RETURNING vocab_id, word, definition, category
             "#,
             vocab.vocab_id,
             vocab.word,
             vocab.definition,
             category_str
         )
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|e| format!("Database error while saving vocab: {}", e))?;
 
-        Ok(())
+        let category = match row.category.as_str() {
+            "Daily" => VocabCategory::Daily,
+            "Native" => VocabCategory::Native,
+            "Tech" => VocabCategory::Tech,
+            _ => VocabCategory::Daily,
+        };
+
+        Ok(Vocab::new(row.vocab_id, row.word, row.definition, category))
     }
 
     async fn upsert_user_vocab(&self, user_vocab: &UserVocab) -> Result<(), String> {

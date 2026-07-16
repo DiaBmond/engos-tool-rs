@@ -4,7 +4,7 @@ use crate::domain::user_vocab::UserVocab;
 use crate::application::vocab::dto::VocabEvaluation;
 
 pub trait VocabRepository: Send + Sync {
-    fn save_vocab(&self, vocab: &Vocab) -> impl Future<Output = Result<(), String>> + Send;
+    fn save_vocab(&self, vocab: &Vocab) -> impl Future<Output = Result<Vocab, String>> + Send;
 
     fn find_vocab_by_id(&self, vocab_id: &str) -> impl Future<Output = Result<Option<Vocab>, String>> + Send;
 

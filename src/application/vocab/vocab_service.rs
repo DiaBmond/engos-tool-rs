@@ -13,14 +13,25 @@ impl<R: VocabRepository, A: VocabAiPort> VocabService<R, A> {
         Self { repo, ai }
     }
 
-    pub async fn start_new_round(&self) -> Result<Vec<Vocab>, String> {
-        let vocabs = self.ai.generate_three_vocabs().await?;
+    pub async fn start_new_round(&self, user_id: &str) -> Result<Vec<Vocab>, String> {
+        let generated_vocabs = self.ai.generate_three_vocabs().await?;
         
-        if vocabs.len() != 3 {
+        if generated_vocabs.len() != 3 {
             return Err("The AI didn't generate all three words as specified.".to_string());
         }
 
-        Ok(vocabs)
+        let mut final_vocabs = Vec::new();
+
+        for vocab in &generated_vocabs {
+            let saved_vocab = self.repo.save_vocab(vocab).await?;
+            
+            let user_vocab = UserVocab::new(user_id.to_string(), saved_vocab.vocab_id.clone());
+            self.repo.upsert_user_vocab(&user_vocab).await?;
+
+            final_vocabs.push(saved_vocab);
+        }
+
+        Ok(final_vocabs)
     }
 
     pub async fn check_answer(&self, target_vocab: &Vocab, user_answer: &str) -> Result<VocabEvaluation, String> {
