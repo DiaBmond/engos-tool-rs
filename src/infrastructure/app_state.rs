@@ -1,69 +1,118 @@
 use std::sync::Arc;
+
 use sqlx::PgPool;
-use crate::infrastructure::database::postgres::vocab_repository::PostgresVocabRepository;
-use crate::infrastructure::database::postgres::user_repository::PostgresUserRepository;
+
+use crate::application::deps::AppDeps;
+use crate::application::roleplay::roleplay_service::RoleplayService;
+use crate::application::sentence::sentence_service::SentenceService;
+use crate::application::session::ports::ChatStateRepository;
+use crate::application::user::ports::UserUseCase;
+use crate::application::user::user_service::UserService;
+use crate::application::vocab::vocab_service::VocabService;
+use crate::domain::error::AppResult;
+use crate::infrastructure::config::AppConfig;
 use crate::infrastructure::database::postgres::sentence_repository::PostgresSentenceRepository;
-use crate::infrastructure::database::redis_repo::RedisChatStateRepository;
+use crate::infrastructure::database::postgres::user_repository::PostgresUserRepository;
+use crate::infrastructure::database::postgres::vocab_repository::PostgresVocabRepository;
+use crate::infrastructure::database::redis_repo::RedisSessionRepository;
 use crate::infrastructure::external::gemini::client::GeminiClient;
 use crate::infrastructure::external::line_api::LineClient;
 
-use crate::application::vocab::vocab_service::VocabService;
-use crate::application::sentence::sentence_service::SentenceService;
-use crate::application::roleplay::roleplay_service::RoleplayService;
+pub type AppVocabService = VocabService<PostgresVocabRepository, GeminiClient>;
+pub type AppSentenceService = SentenceService<PostgresSentenceRepository, GeminiClient>;
+pub type AppRoleplayService = RoleplayService<GeminiClient>;
+pub type AppUserService = UserService<PostgresUserRepository>;
 
+/// The production wiring of [`AppDeps`].
+///
+/// Handlers never name this type: they are generic over `AppDeps`, so tests can
+/// supply an entirely in-memory implementation.
 #[derive(Clone)]
 pub struct AppState {
-    pub pg_pool: PgPool,
-    pub vocab_repo: Arc<PostgresVocabRepository>,
-    pub user_repo: Arc<PostgresUserRepository>,
-    pub sentence_repo: Arc<PostgresSentenceRepository>,
-    pub chat_state_repo: Arc<RedisChatStateRepository>,
-    pub gemini_client: Arc<GeminiClient>,
-    pub line_client: Arc<LineClient>,
-    
-    pub vocab_service: Arc<VocabService<PostgresVocabRepository, GeminiClient>>,
-    pub sentence_service: Arc<SentenceService<PostgresSentenceRepository, GeminiClient>>,
-    pub roleplay_service: Arc<RoleplayService<GeminiClient>>,
+    config: Arc<AppConfig>,
+    session_repo: Arc<RedisSessionRepository>,
+    line_client: Arc<LineClient>,
+    user_service: Arc<AppUserService>,
+    vocab_service: Arc<AppVocabService>,
+    sentence_service: Arc<AppSentenceService>,
+    roleplay_service: Arc<AppRoleplayService>,
 }
 
 impl AppState {
     pub fn new(
+        config: AppConfig,
         pg_pool: PgPool,
-        chat_state_repo: RedisChatStateRepository,
+        session_repo: RedisSessionRepository,
         gemini_client: GeminiClient,
         line_client: LineClient,
     ) -> Self {
-        let vocab_repo = Arc::new(PostgresVocabRepository::new(pg_pool.clone()));
-        let user_repo = Arc::new(PostgresUserRepository::new(pg_pool.clone()));
-        let sentence_repo = Arc::new(PostgresSentenceRepository::new(pg_pool.clone()));
-        
-        let gemini_arc = Arc::new(gemini_client);
+        // `PgPool` and `reqwest::Client` are handle types over a shared pool, so
+        // cloning them here shares connections rather than duplicating them.
+        let user_service = UserService::new(PostgresUserRepository::new(pg_pool.clone()));
 
-        let vocab_service = Arc::new(VocabService::new(
+        let vocab_service = VocabService::new(
             PostgresVocabRepository::new(pg_pool.clone()),
-            gemini_arc.as_ref().clone(),
-        ));
+            gemini_client.clone(),
+        );
 
-        let sentence_service = Arc::new(SentenceService::new(
+        let sentence_service = SentenceService::new(
             PostgresSentenceRepository::new(pg_pool.clone()),
-            gemini_arc.as_ref().clone(),
-        ));
+            gemini_client.clone(),
+        );
 
-        let roleplay_service = Arc::new(RoleplayService::new(
-            gemini_arc.as_ref().clone(),
-        ));
+        let roleplay_service = RoleplayService::new(gemini_client);
 
         Self {
-            pg_pool,
-            vocab_repo,
-            user_repo,
-            sentence_repo,
-            chat_state_repo: Arc::new(chat_state_repo),
-            gemini_client: gemini_arc,
+            config: Arc::new(config),
+            session_repo: Arc::new(session_repo),
             line_client: Arc::new(line_client),
-            vocab_service,
-            sentence_service,
-            roleplay_service,
+            user_service: Arc::new(user_service),
+            vocab_service: Arc::new(vocab_service),
+            sentence_service: Arc::new(sentence_service),
+            roleplay_service: Arc::new(roleplay_service),
         }
+    }
+
+    /// Verifies both backing stores are reachable. Used by `/readyz`.
+    pub async fn health_check(&self) -> AppResult<()> {
+        self.user_service.health_check().await?;
+        self.session_repo.ping().await
+    }
+}
+
+impl AppDeps for AppState {
+    type Users = AppUserService;
+    type Vocab = AppVocabService;
+    type Sentences = AppSentenceService;
+    type Roleplay = AppRoleplayService;
+    type Session = RedisSessionRepository;
+    type Messaging = LineClient;
+
+    fn users(&self) -> &Self::Users {
+        &self.user_service
+    }
+
+    fn vocab(&self) -> &Self::Vocab {
+        &self.vocab_service
+    }
+
+    fn sentences(&self) -> &Self::Sentences {
+        &self.sentence_service
+    }
+
+    fn roleplay(&self) -> &Self::Roleplay {
+        &self.roleplay_service
+    }
+
+    fn session(&self) -> &Self::Session {
+        &self.session_repo
+    }
+
+    fn messaging(&self) -> &Self::Messaging {
+        &self.line_client
+    }
+
+    fn line_channel_secret(&self) -> &str {
+        self.config.line_channel_secret.expose()
     }
 }

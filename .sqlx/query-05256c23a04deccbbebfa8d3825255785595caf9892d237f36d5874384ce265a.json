@@ -1,0 +1,101 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT v.vocab_id, v.word, v.definition, v.category,\n                   uv.seen_count, uv.correct_count, uv.last_reviewed_at\n            FROM user_vocabs uv\n            JOIN vocabs v ON uv.vocab_id = v.vocab_id\n            WHERE uv.user_id = $1\n            ORDER BY uv.correct_count ASC,\n                     uv.last_reviewed_at ASC NULLS FIRST,\n                     RANDOM()\n            LIMIT $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vocab_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "vocab_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "word",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "word"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "definition",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "definition"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "category",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "seen_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "user_vocabs",
+            "name": "seen_count"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "correct_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "user_vocabs",
+            "name": "correct_count"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_reviewed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "user_vocabs",
+            "name": "last_reviewed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "05256c23a04deccbbebfa8d3825255785595caf9892d237f36d5874384ce265a"
+}

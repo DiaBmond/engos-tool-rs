@@ -1,0 +1,5 @@
+# Pins the toolchain so local builds, CI and the Docker image agree.
+# Edition 2024 requires 1.85 or newer.
+[toolchain]
+channel = "1.96"
+components = ["rustfmt", "clippy"]

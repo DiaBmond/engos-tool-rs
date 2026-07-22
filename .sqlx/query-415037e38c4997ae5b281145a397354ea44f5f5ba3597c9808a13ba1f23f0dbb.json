@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO sentences (\n                sentence_id, user_id, original_text, final_text,\n                total_fix, final_feedback, is_passed\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7)\n            ON CONFLICT (sentence_id)\n            DO UPDATE SET\n                final_text = EXCLUDED.final_text,\n                total_fix = EXCLUDED.total_fix,\n                final_feedback = EXCLUDED.final_feedback,\n                is_passed = EXCLUDED.is_passed,\n                updated_at = NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Text",
+        "Int2",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "415037e38c4997ae5b281145a397354ea44f5f5ba3597c9808a13ba1f23f0dbb"
+}

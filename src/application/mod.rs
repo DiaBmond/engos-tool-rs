@@ -1,4 +1,7 @@
+pub mod deps;
+pub mod messaging;
 pub mod roleplay;
 pub mod sentence;
-pub mod vocab;
+pub mod session;
 pub mod user;
+pub mod vocab;

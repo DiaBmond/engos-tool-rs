@@ -1,5 +1,7 @@
-use super::dto::{RoleplayScenario, RoleplayReply, RoleplayEvaluation};
-use super::ports::RoleplayAiPort;
+use super::dto::{RoleplayEvaluation, RoleplayReply, RoleplayScenario};
+use super::ports::{RoleplayAiPort, RoleplayUseCase};
+use crate::domain::chat_state::RoleplayTurn;
+use crate::domain::error::AppResult;
 use crate::domain::user::User;
 
 pub struct RoleplayService<A: RoleplayAiPort> {
@@ -10,36 +12,29 @@ impl<A: RoleplayAiPort> RoleplayService<A> {
     pub fn new(ai: A) -> Self {
         Self { ai }
     }
+}
 
-    pub async fn start_new_session(&self, user: &User) -> Result<RoleplayScenario, String> {
+impl<A: RoleplayAiPort> RoleplayUseCase for RoleplayService<A> {
+    async fn start_new_session(&self, user: &User) -> AppResult<RoleplayScenario> {
         self.ai.generate_scenario(user.current_level).await
     }
 
-    pub async fn handle_turn(
+    async fn handle_turn(
         &self,
         scenario: &RoleplayScenario,
-        chat_history: &[(String, String)],
+        chat_history: &[RoleplayTurn],
         user_message: &str,
-    ) -> Result<RoleplayReply, String> {
-        self.ai.respond_in_character(scenario, chat_history, user_message).await
+    ) -> AppResult<RoleplayReply> {
+        self.ai
+            .respond_in_character(scenario, chat_history, user_message)
+            .await
     }
 
-    pub async fn finish_session(
+    async fn grade_session(
         &self,
-        user: &mut User,
         scenario: &RoleplayScenario,
-        chat_history: &[(String, String)],
-    ) -> Result<(RoleplayEvaluation, bool), String> {
-        let eval = self.ai.evaluate_session(scenario, chat_history).await?;
-
-        let mut is_leveled_up = false;
-
-        if eval.is_passed {
-            is_leveled_up = user.pass_roleplay();
-        } else {
-            user.fail_roleplay();
-        }
-
-        Ok((eval, is_leveled_up))
+        chat_history: &[RoleplayTurn],
+    ) -> AppResult<RoleplayEvaluation> {
+        self.ai.evaluate_session(scenario, chat_history).await
     }
 }

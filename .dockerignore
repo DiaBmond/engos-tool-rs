@@ -1,0 +1,12 @@
+target/
+.git/
+.github/
+.env
+.env.*
+!.env.example
+README.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+tests/
+**/*.rs.bk

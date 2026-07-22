@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT vocab_id, word, definition, category\n            FROM vocabs\n            WHERE vocab_id = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vocab_id",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "vocab_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "word",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "word"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "definition",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "definition"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "category",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "category"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3565d55208dca52a1eba00e84b810e1113cf84c557610261d8ebd62494a647de"
+}

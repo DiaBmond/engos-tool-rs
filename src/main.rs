@@ -1,51 +1,68 @@
-use sqlx::postgres::PgPoolOptions;
-use std::env;
-use std::time::Duration;
+use std::process::ExitCode;
 
-use engos_tool_rs::infrastructure::database::redis_repo::RedisChatStateRepository;
+use sqlx::postgres::PgPoolOptions;
+
+use engos_tool_rs::domain::error::AppResult;
+use engos_tool_rs::infrastructure::app_state::AppState;
+use engos_tool_rs::infrastructure::config::AppConfig;
+use engos_tool_rs::infrastructure::database::redis_repo::RedisSessionRepository;
 use engos_tool_rs::infrastructure::external::gemini::client::GeminiClient;
 use engos_tool_rs::infrastructure::external::line_api::LineClient;
-use engos_tool_rs::infrastructure::app_state::AppState;
 use engos_tool_rs::infrastructure::server::start_server;
+use engos_tool_rs::infrastructure::telemetry;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if let Err(_) = dotenvy::dotenv() {
-        println!("⚠️  Note: .env file not found, reading from system environment variables.");
+async fn main() -> ExitCode {
+    if dotenvy::dotenv().is_err() {
+        // Not an error: deployed environments inject variables directly.
+        eprintln!("note: no .env file found, reading from the process environment");
     }
 
-    println!("🛠️  Starting EngOS Server...");
+    telemetry::init();
 
-    let db_url = env::var("DATABASE_URL").expect("❌ Missing DATABASE_URL in .env");
-    let redis_url = env::var("REDIS_URL").expect("❌ Missing REDIS_URL in .env");
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port: u16 = env::var("PORT")
-        .unwrap_or_else(|_| "8080".to_string())
-        .parse()
-        .expect("❌ PORT must be a valid number");
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            // `AppError`'s Display is log-safe: secrets are wrapped and upstream
+            // errors are redacted before they reach it.
+            tracing::error!(error = %error, kind = error.kind(), "fatal startup error");
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    println!("🗄️  Connecting to PostgreSQL...");
+async fn run() -> AppResult<()> {
+    tracing::info!("starting EngOS server");
+
+    // Validate the whole environment up front so a missing variable fails the
+    // process immediately rather than the first request that needs it.
+    let config = AppConfig::from_env()?;
+
+    tracing::info!("connecting to PostgreSQL");
     let pg_pool = PgPoolOptions::new()
-        .max_connections(5)
-        .acquire_timeout(Duration::from_secs(5))
-        .connect(&db_url)
-        .await
-        .expect("❌ Failed to connect to PostgreSQL");
-    println!("✅ PostgreSQL Connected!");
+        .max_connections(config.db_max_connections)
+        .acquire_timeout(config.db_acquire_timeout)
+        .connect(config.database_url.expose())
+        .await?;
+    tracing::info!(
+        max_connections = config.db_max_connections,
+        "PostgreSQL connected"
+    );
 
-    println!("🧠 Connecting to Redis...");
-    let chat_state_repo = RedisChatStateRepository::new(&redis_url)
-        .await
-        .expect("❌ Failed to connect to Redis");
-    println!("✅ Redis Connected!");
+    tracing::info!("connecting to Redis");
+    let session_repo = RedisSessionRepository::new(config.redis_url.expose()).await?;
+    tracing::info!("Redis connected");
 
-    println!("🤖 Initializing Gemini AI & LINE Clients...");
-    let gemini_client = GeminiClient::from_env();
-    let line_client = LineClient::from_env();
+    let gemini_client = GeminiClient::new(
+        config.gemini_api_key.expose().to_string(),
+        config.gemini_model.clone(),
+    )?;
+    let line_client = LineClient::new(config.line_access_token.expose().to_string())?;
+    tracing::info!("Gemini and LINE clients initialised");
 
-    let app_state = AppState::new(pg_pool, chat_state_repo, gemini_client, line_client);
+    let host = config.host.clone();
+    let port = config.port;
+    let state = AppState::new(config, pg_pool, session_repo, gemini_client, line_client);
 
-    start_server(app_state, &host, port).await?;
-
-    Ok(())
+    start_server(state, &host, port).await
 }

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO users (user_id, progress_stack, current_level, created_at)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (user_id)\n            DO UPDATE SET\n                progress_stack = EXCLUDED.progress_stack,\n                current_level = EXCLUDED.current_level\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Int4",
+        "Int2",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d5673e21ab657c95e627dcae1f94694acd451595cb60a219c213ba9e58c2d1dd"
+}

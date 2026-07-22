@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE user_vocabs\n            SET correct_count = correct_count + CASE WHEN $3 THEN 1 ELSE 0 END,\n                last_reviewed_at = NOW()\n            WHERE user_id = $1 AND vocab_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "684285dcb9cad11c0fa99703d676d7cd9dd7292af822af96eaf287a6d654aaff"
+}

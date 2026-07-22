@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO user_vocabs (user_id, vocab_id, seen_count, correct_count)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (user_id, vocab_id)\n            DO UPDATE SET seen_count = user_vocabs.seen_count + 1\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e3b88680f9adc46892a61710f395c246039987e12890faf1d0dd03034f246ad4"
+}

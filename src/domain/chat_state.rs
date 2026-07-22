@@ -1,48 +1,137 @@
 use serde::{Deserialize, Serialize};
+
 use crate::application::roleplay::dto::RoleplayScenario;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Vocabulary words served per guessing round.
+pub const VOCAB_ROUND_SIZE: usize = 3;
+
+/// Wrong guesses allowed on one word before the answer is revealed and the
+/// round moves on. Without a ceiling a learner could guess forever, and every
+/// wrong guess costs one AI call.
+pub const MAX_VOCAB_ATTEMPTS: u8 = 3;
+
+/// Conversational turns in a roleplay session before it is graded.
+pub const ROLEPLAY_TOTAL_TURNS: u8 = 5;
+
+/// How long an idle conversation keeps its state, in seconds.
+pub const STATE_TTL_SECONDS: u64 = 3600;
+
+/// One exchange in a roleplay session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleplayTurn {
+    pub user_message: String,
+    pub ai_message: String,
+}
+
+/// Where a learner currently is in the conversation.
+///
+/// Persisted to Redis as JSON. The shape is part of the storage contract, so
+/// [`crate::infrastructure::database::redis_repo`] namespaces its keys with a
+/// schema version and treats an unparseable payload as `Idle` rather than
+/// failing the turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChatState {
     Idle,
-    
+
     VocabGuessing {
         vocab_ids: Vec<String>,
         current_index: usize,
         attempt: u8,
     },
-    
+
     VocabReviewing {
         review_list: Vec<String>,
         current_index: usize,
     },
-    
+
     SentenceDraft {
         sentence_id: Option<String>,
+        /// First draft, kept so the persisted row records what the learner
+        /// originally wrote rather than the sentence that finally passed.
+        original_text: Option<String>,
         fix_count: u8,
     },
-    
+
     Roleplay {
-        level: u8,
         turn_count: u8,
         scenario: RoleplayScenario,
-        history: Vec<(String, String)>,
+        history: Vec<RoleplayTurn>,
     },
 }
 
 impl ChatState {
-    pub fn default_state() -> Self {
-        Self::Idle
+    /// Low-cardinality name for structured log fields.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::VocabGuessing { .. } => "vocab_guessing",
+            Self::VocabReviewing { .. } => "vocab_reviewing",
+            Self::SentenceDraft { .. } => "sentence_draft",
+            Self::Roleplay { .. } => "roleplay",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scenario() -> RoleplayScenario {
+        RoleplayScenario {
+            role_name: "John".into(),
+            setting: "ร้านกาแฟ".into(),
+            opening_line: "Hi there!".into(),
+        }
     }
 
-    pub fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle)
+    /// The state shape is a storage contract with Redis — a silent change to it
+    /// would strand every in-flight session.
+    #[test]
+    fn every_variant_survives_a_json_roundtrip() {
+        let states = vec![
+            ChatState::Idle,
+            ChatState::VocabGuessing {
+                vocab_ids: vec!["a".into(), "b".into(), "c".into()],
+                current_index: 1,
+                attempt: 2,
+            },
+            ChatState::VocabReviewing {
+                review_list: vec!["a".into()],
+                current_index: 0,
+            },
+            ChatState::SentenceDraft {
+                sentence_id: Some("s1".into()),
+                original_text: Some("I has a pen".into()),
+                fix_count: 4,
+            },
+            ChatState::Roleplay {
+                turn_count: 3,
+                scenario: scenario(),
+                history: vec![RoleplayTurn {
+                    user_message: "Hello".into(),
+                    ai_message: "Hi!".into(),
+                }],
+            },
+        ];
+
+        for state in states {
+            let json = serde_json::to_string(&state).expect("serialize");
+            let back: ChatState = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(state, back, "roundtrip changed the state");
+        }
     }
 
-    pub fn is_reviewing(&self) -> bool {
-        matches!(self, Self::VocabReviewing { .. })
-    }
-
-    pub fn is_roleplay(&self) -> bool {
-        matches!(self, Self::Roleplay { .. })
+    #[test]
+    fn names_are_stable_for_logging() {
+        assert_eq!(ChatState::Idle.name(), "idle");
+        assert_eq!(
+            ChatState::Roleplay {
+                turn_count: 1,
+                scenario: scenario(),
+                history: vec![],
+            }
+            .name(),
+            "roleplay"
+        );
     }
 }
