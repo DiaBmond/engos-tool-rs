@@ -11,6 +11,7 @@ use crate::application::roleplay::dto::RoleplayScenario;
 use crate::application::roleplay::ports::RoleplayUseCase;
 use crate::application::sentence::ports::SentenceUseCase;
 use crate::application::session::ports::{ChatStateRepository, LockToken, SessionLockRepository};
+use crate::application::usage::ports::{UsageReport, UsageUseCase};
 use crate::application::user::ports::UserUseCase;
 use crate::application::vocab::ports::VocabUseCase;
 use crate::domain::chat_state::{
@@ -18,7 +19,10 @@ use crate::domain::chat_state::{
     VOCAB_ROUND_SIZE,
 };
 use crate::domain::error::{AppError, AppResult};
-use crate::domain::user::{STACK_TO_LEVEL_UP, User};
+use crate::domain::user::{
+    PENALTY_ROLEPLAY_FAILED, REWARD_REVIEW_SESSION, REWARD_ROLEPLAY_PASSED, REWARD_SENTENCE_PASSED,
+    REWARD_VOCAB_ROUND, STACK_TO_LEVEL_UP, User,
+};
 use crate::infrastructure::http::signature::verify_line_signature;
 
 /// Hard ceiling on one turn's processing time.
@@ -47,7 +51,14 @@ const LOCK_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// Retention for processed webhook event ids. LINE retries well inside this.
 const EVENT_DEDUP_TTL_SECONDS: u64 = 600;
 
-const MENU: &str = "พิมพ์ตัวเลขเพื่อเลือกโหมดฝึก:\n1. ทายศัพท์ (Vocab)\n2. ทบทวนศัพท์ (Review)\n3. แต่งประโยค (Sentence)\n4. โรลเพลย์ (Roleplay)";
+const MENU: &str = "พิมพ์ตัวเลขเพื่อเลือกโหมดฝึก:\n1. ทายศัพท์ (Vocab)\n2. ทบทวนศัพท์ (Review)\n3. แต่งประโยค (Sentence)\n4. โรลเพลย์ (Roleplay)\n5. สถิติการใช้ AI (Usage)";
+
+/// Window covered by the usage report.
+const USAGE_REPORT_DAYS: u32 = 30;
+
+/// Typed verbatim to confirm account erasure. Deliberately not a digit, so it
+/// cannot be hit while answering a quiz.
+const DELETE_CONFIRM_PHRASE: &str = "ยืนยันลบข้อมูล";
 
 /// Webhook entry point.
 ///
@@ -292,6 +303,10 @@ async fn process_user_message<D: AppDeps>(deps: &D, message: &TextMessage) -> Ap
         return reply(deps, message, &format!("ออกสู่เมนูหลักแล้วครับ\n\n{MENU}")).await;
     }
 
+    if is_delete_command(&message.text) {
+        return start_deletion(deps, message).await;
+    }
+
     match current_state {
         ChatState::Idle => handle_idle(deps, &user, message).await,
         ChatState::VocabGuessing {
@@ -304,23 +319,42 @@ async fn process_user_message<D: AppDeps>(deps: &D, message: &TextMessage) -> Ap
         ChatState::VocabReviewing {
             review_list,
             current_index,
-        } => handle_vocab_reviewing(deps, message, review_list, current_index).await,
+        } => handle_vocab_reviewing(deps, &mut user, message, review_list, current_index).await,
         ChatState::SentenceDraft {
             sentence_id,
             original_text,
             fix_count,
-        } => handle_sentence_draft(deps, message, sentence_id, original_text, fix_count).await,
+        } => {
+            handle_sentence_draft(
+                deps,
+                &mut user,
+                message,
+                sentence_id,
+                original_text,
+                fix_count,
+            )
+            .await
+        }
         ChatState::Roleplay {
             turn_count,
             scenario,
             history,
         } => handle_roleplay(deps, &mut user, message, turn_count, scenario, history).await,
+        ChatState::ConfirmDeletion => handle_deletion_confirmation(deps, message).await,
     }
 }
 
 fn is_exit_command(text: &str) -> bool {
     let normalized = text.trim().to_lowercase();
     matches!(normalized.as_str(), "ยกเลิก" | "ออก" | "exit" | "cancel")
+}
+
+fn is_delete_command(text: &str) -> bool {
+    let normalized = text.trim().to_lowercase();
+    matches!(
+        normalized.as_str(),
+        "ลบข้อมูล" | "ลบบัญชี" | "delete my data" | "delete account"
+    )
 }
 
 /// Sends a reply, falling back to a push if the reply token has expired.
@@ -361,6 +395,7 @@ async fn handle_idle<D: AppDeps>(deps: &D, user: &User, message: &TextMessage) -
             start_sentence_draft(deps, user, message).await
         }
         "4" | "โรลเพลย์" | "roleplay" => start_roleplay(deps, user, message).await,
+        "5" | "สถิติ" | "usage" | "stats" => show_usage(deps, message).await,
         _ => {
             reply(
                 deps,
@@ -377,7 +412,10 @@ async fn start_vocab_round<D: AppDeps>(
     user: &User,
     message: &TextMessage,
 ) -> AppResult<()> {
-    let vocabs = deps.vocab().start_new_round(&user.user_id).await?;
+    let vocabs = deps
+        .vocab()
+        .start_new_round(&user.user_id, user.current_level)
+        .await?;
 
     let Some(first) = vocabs.first() else {
         return reply(deps, message, "ตอนนี้ยังสร้างคำศัพท์ไม่ได้ครับ ลองใหม่อีกครั้งนะครับ 🙏").await;
@@ -585,7 +623,10 @@ async fn handle_vocab_guessing<D: AppDeps>(
 
     // Round finished. Progress goes through the shared domain rule so vocab and
     // roleplay cannot drift apart.
-    let levelled_up = deps.users().award_progress(user).await?;
+    let levelled_up = deps
+        .users()
+        .award_progress(user, REWARD_VOCAB_ROUND)
+        .await?;
     deps.session().clear_state(&user.user_id).await?;
 
     let summary = if levelled_up {
@@ -620,6 +661,7 @@ async fn handle_vocab_guessing<D: AppDeps>(
 
 async fn handle_vocab_reviewing<D: AppDeps>(
     deps: &D,
+    user: &mut User,
     message: &TextMessage,
     review_list: Vec<String>,
     current_index: usize,
@@ -651,11 +693,21 @@ async fn handle_vocab_reviewing<D: AppDeps>(
     let total = review_list.len();
 
     if next_index >= total {
+        // Reviewing now earns progress. Leaving it worth nothing made the mode
+        // that actually consolidates memory the least attractive one to pick.
+        let levelled_up = deps
+            .users()
+            .award_progress(user, REWARD_REVIEW_SESSION)
+            .await?;
         deps.session().clear_state(&message.user_id).await?;
+
         return reply(
             deps,
             message,
-            &format!("{header}\n\n🎉 ทบทวนคำศัพท์ครบทุกข้อแล้วครับ เก่งมาก!\n\n{MENU}"),
+            &format!(
+                "{header}\n\n🎉 ทบทวนคำศัพท์ครบทุกข้อแล้วครับ เก่งมาก!\n{}\n\n{MENU}",
+                progress_line(user, levelled_up)
+            ),
         )
         .await;
     }
@@ -689,6 +741,7 @@ async fn handle_vocab_reviewing<D: AppDeps>(
 
 async fn handle_sentence_draft<D: AppDeps>(
     deps: &D,
+    user: &mut User,
     message: &TextMessage,
     sentence_id: Option<String>,
     original_text: Option<String>,
@@ -704,17 +757,25 @@ async fn handle_sentence_draft<D: AppDeps>(
             &message.text,
             original_text.as_deref(),
             fix_count,
+            user.current_level,
         )
         .await?;
 
     if outcome.analysis.is_passed {
+        let levelled_up = deps
+            .users()
+            .award_progress(user, REWARD_SENTENCE_PASSED)
+            .await?;
         deps.session().clear_state(&message.user_id).await?;
+
         return reply(
             deps,
             message,
             &format!(
-                "✅ ยอดเยี่ยมมากครับ! ประโยคผ่านเรียบร้อย (แก้ไขไป {} ครั้ง)\n\n💡 Native Trick สำหรับคุณ:\n{}\n\n{MENU}",
-                outcome.total_fix, outcome.analysis.feedback
+                "✅ ยอดเยี่ยมมากครับ! ประโยคผ่านเรียบร้อย (แก้ไขไป {} ครั้ง)\n\n💡 Native Trick สำหรับคุณ:\n{}\n{}\n\n{MENU}",
+                outcome.total_fix,
+                outcome.analysis.feedback,
+                progress_line(user, levelled_up)
             ),
         )
         .await;
@@ -756,30 +817,34 @@ async fn handle_roleplay<D: AppDeps>(
     scenario: RoleplayScenario,
     mut history: Vec<RoleplayTurn>,
 ) -> AppResult<()> {
-    if turn_count < ROLEPLAY_TOTAL_TURNS {
-        let turn = deps
-            .roleplay()
-            .handle_turn(&scenario, &history, &message.text)
-            .await?;
+    // The learner always gets a reply in character, including on the final
+    // turn — the evaluation rides along with it. Grading used to replace the
+    // last reply, so a session announced as N turns delivered only N-1.
+    let is_final_turn = turn_count >= ROLEPLAY_TOTAL_TURNS;
 
-        history.push(RoleplayTurn {
-            user_message: message.text.clone(),
-            ai_message: turn.ai_message.clone(),
-        });
+    let turn = deps
+        .roleplay()
+        .handle_turn(&scenario, &history, &message.text)
+        .await?;
 
-        let mut body = format!(
-            "💬 [Turn {turn_count}/{ROLEPLAY_TOTAL_TURNS}] AI Roleplay:\n\"{}\"",
-            turn.ai_message
-        );
+    history.push(RoleplayTurn {
+        user_message: message.text.clone(),
+        ai_message: turn.ai_message.clone(),
+    });
 
-        if !turn.is_understood {
-            body.push_str("\n\n⚠️ ประโยคเมื่อกี้ AI ยังไม่ค่อยเข้าใจครับ ลองเรียบเรียงใหม่ดูนะครับ");
-        }
+    let mut body = format!(
+        "💬 [Turn {turn_count}/{ROLEPLAY_TOTAL_TURNS}] {}:\n\"{}\"",
+        scenario.role_name, turn.ai_message
+    );
 
+    if !turn.is_understood {
+        body.push_str("\n\n⚠️ ประโยคเมื่อกี้ AI ยังไม่ค่อยเข้าใจครับ ลองเรียบเรียงใหม่ดูนะครับ");
+    }
+
+    if !is_final_turn {
         if let Some(hint) = turn.hint.as_deref() {
-            body.push_str(&format!("\n\n💡 คำใบ้ตอบเทิร์นถัดไป: {hint}"));
+            body.push_str(&format!("\n\n💡 คำใบ้เทิร์นถัดไป: {hint}"));
         }
-
         body.push_str("\n\n👉 พิมพ์ตอบกลับเป็นภาษาอังกฤษได้เลยครับ!");
 
         set_state(
@@ -796,46 +861,180 @@ async fn handle_roleplay<D: AppDeps>(
         return reply(deps, message, &body).await;
     }
 
-    // Final turn: record it, then grade the whole session.
-    history.push(RoleplayTurn {
-        user_message: message.text.clone(),
-        ai_message: String::new(),
-    });
-
     let evaluation = deps.roleplay().grade_session(&scenario, &history).await?;
 
-    // Progression is applied here, through the same path every other mode uses.
+    // Progression runs through the same path every other mode uses.
     let levelled_up = if evaluation.is_passed {
-        deps.users().award_progress(user).await?
+        deps.users()
+            .award_progress(user, REWARD_ROLEPLAY_PASSED)
+            .await?
     } else {
-        deps.users().penalize(user).await?;
+        deps.users().penalize(user, PENALTY_ROLEPLAY_FAILED).await?;
         false
     };
 
     deps.session().clear_state(&user.user_id).await?;
 
-    let status = if levelled_up {
+    let verdict = if evaluation.is_passed {
+        "✅ ผ่านเกณฑ์ครับ!"
+    } else {
+        "❌ รอบนี้ยังไม่ผ่านเกณฑ์ครับ"
+    };
+
+    body.push_str(&format!(
+        "\n\n------------------\n🏁 จบเซสชันครบ {ROLEPLAY_TOTAL_TURNS} เทิร์น!\n📌 {verdict}\n{}\n\n📋 สรุปผลการประเมิน:\n{}\n\n{MENU}",
+        progress_line(user, levelled_up),
+        evaluation.summary_feedback
+    ));
+
+    reply(deps, message, &body).await
+}
+
+// ---------------------------------------------------------------------------
+// Progress reporting
+// ---------------------------------------------------------------------------
+
+/// One line summarising where the learner now stands, shared by every mode so
+/// the wording cannot drift between them.
+fn progress_line(user: &User, levelled_up: bool) -> String {
+    if levelled_up {
+        format!("🎉 LEVEL UP! ตอนนี้อยู่ Level {} แล้วครับ", user.current_level)
+    } else if user.is_max_level() {
+        "🏅 คุณอยู่ระดับสูงสุดแล้วครับ".to_string()
+    } else {
         format!(
-            "🎉 ยินดีด้วยครับ! คุณสะสมครบและ LEVEL UP เป็น Level {} สำเร็จ!",
-            user.current_level
-        )
-    } else if evaluation.is_passed {
-        format!(
-            "💪 สอบผ่านประจำรอบ! (แต้มสะสม: {}, อีก {} รอบจะเลเวลอัป)",
+            "📊 แต้มสะสม: {}/{} (อีก {} แต้มจะเลเวลอัป)",
             user.progress_stack,
+            STACK_TO_LEVEL_UP,
             user.progress_remaining()
         )
-    } else {
-        format!("❌ รอบนี้ยังไม่ผ่านเกณฑ์ครับ (แต้มสะสม: {})", user.progress_stack)
-    };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AI usage report
+// ---------------------------------------------------------------------------
+
+async fn show_usage<D: AppDeps>(deps: &D, message: &TextMessage) -> AppResult<()> {
+    let report = deps.usage().report(USAGE_REPORT_DAYS).await?;
+    reply(deps, message, &format_usage(&report)).await
+}
+
+fn format_usage(report: &UsageReport) -> String {
+    let s = &report.summary;
+
+    if s.calls == 0 {
+        return format!(
+            "📊 สถิติการใช้ AI ({} วันล่าสุด)\n\nยังไม่มีการเรียกใช้ AI ในช่วงนี้ครับ\n\n{MENU}",
+            report.period_days
+        );
+    }
+
+    let mut text = format!(
+        "📊 สถิติการใช้ AI ({} วันล่าสุด)\n🤖 โมเดล: {}\n\n         🔢 เรียกใช้: {} ครั้ง\n         📥 Input:  {} tokens\n         📤 Output: {} tokens\n         🧮 รวม:    {} tokens\n         💰 ค่าใช้จ่ายโดยประมาณ: ${:.4}\n\n         🎯 โควตาที่ตั้งไว้: {} tokens\n         ✅ ใช้ไป {:.1}%  |  เหลือ {} tokens",
+        report.period_days,
+        report.model,
+        fmt_int(s.calls),
+        fmt_int(s.prompt_tokens),
+        fmt_int(s.output_tokens),
+        fmt_int(s.total_tokens),
+        report.estimated_cost(),
+        fmt_int(report.budget_tokens),
+        report.budget_used_percent(),
+        fmt_int(report.remaining_tokens()),
+    );
+
+    if !s.by_feature.is_empty() {
+        text.push_str("\n\n📂 แยกตามโหมด:");
+        for f in &s.by_feature {
+            text.push_str(&format!(
+                "\n• {} — {} ครั้ง ({} tokens)",
+                feature_label(&f.feature),
+                fmt_int(f.calls),
+                fmt_int(f.total_tokens)
+            ));
+        }
+    }
+
+    text.push_str("\n\n(ราคาเป็นค่าประมาณจาก AI_PRICE_* ใน .env)");
+    text.push_str(&format!("\n\n{MENU}"));
+    text
+}
+
+/// Maps the stored feature name back to a Thai label.
+fn feature_label(stored: &str) -> &str {
+    use crate::domain::usage::AiFeature::*;
+    for feature in [
+        VocabGenerate,
+        VocabEvaluate,
+        SentenceAnalyze,
+        RoleplayScenario,
+        RoleplayTurn,
+        RoleplayEvaluate,
+    ] {
+        if feature.as_str() == stored {
+            return feature.label_th();
+        }
+    }
+    stored
+}
+
+/// Thousands separators, so six-figure token counts stay readable.
+fn fmt_int(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Account deletion
+// ---------------------------------------------------------------------------
+
+async fn start_deletion<D: AppDeps>(deps: &D, message: &TextMessage) -> AppResult<()> {
+    set_state(deps, &message.user_id, &ChatState::ConfirmDeletion).await?;
 
     reply(
         deps,
         message,
         &format!(
-            "🏁 จบเซสชันโรลเพลย์!\n📌 {status}\n📊 ระดับปัจจุบัน: Level {}\n\n📋 สรุปผลการประเมิน:\n{}\n\n{MENU}",
-            user.current_level, evaluation.summary_feedback
+            "⚠️ ยืนยันการลบข้อมูล\n\nระบบจะลบข้อมูลทั้งหมดของคุณอย่างถาวร:\n             • ระดับและแต้มสะสม\n• คลังคำศัพท์และประวัติการทบทวน\n• ประโยคที่เคยฝึกทั้งหมด\n\n             ❗️ กู้คืนไม่ได้\n\n             พิมพ์ \"{DELETE_CONFIRM_PHRASE}\" เพื่อยืนยัน หรือพิมพ์ \"ยกเลิก\" เพื่อออก"
         ),
+    )
+    .await
+}
+
+async fn handle_deletion_confirmation<D: AppDeps>(
+    deps: &D,
+    message: &TextMessage,
+) -> AppResult<()> {
+    if message.text.trim() != DELETE_CONFIRM_PHRASE {
+        return reply(
+            deps,
+            message,
+            &format!(
+                "ยังไม่ได้ลบข้อมูลครับ\n\nพิมพ์ \"{DELETE_CONFIRM_PHRASE}\" ให้ตรงเพื่อยืนยัน หรือ \"ยกเลิก\" เพื่อออก"
+            ),
+        )
+        .await;
+    }
+
+    // Clear the conversation before the account: if the erasure fails, the
+    // learner is not left stranded in a confirmation state.
+    deps.session().clear_state(&message.user_id).await?;
+    deps.users().delete_account(&message.user_id).await?;
+
+    tracing::info!("erased account on user request");
+
+    reply(
+        deps,
+        message,
+        "🗑️ ลบข้อมูลทั้งหมดเรียบร้อยแล้วครับ\n\nถ้าทักมาใหม่ ระบบจะเริ่มต้นให้ที่ Level 1 เหมือนผู้ใช้ใหม่ครับ",
     )
     .await
 }

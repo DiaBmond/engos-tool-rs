@@ -2,8 +2,19 @@ use std::env;
 use std::time::Duration;
 
 use crate::domain::error::{AppError, AppResult, Secret};
+use crate::domain::usage::TokenPricing;
 
 const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+
+/// Token allowance the usage report measures against. Not enforced — this is a
+/// personal tool, so the point is visibility, not rationing.
+const DEFAULT_TOKEN_BUDGET: u64 = 1_000_000;
+
+/// Rough Gemini 2.5 Flash list price in USD per million tokens, used only to
+/// turn token counts into a readable estimate. Override both when the model or
+/// the provider's pricing changes.
+const DEFAULT_PRICE_INPUT_PER_MTOK: f64 = 0.30;
+const DEFAULT_PRICE_OUTPUT_PER_MTOK: f64 = 2.50;
 
 /// Everything the process reads from the environment, validated once at start-up
 /// so a misconfigured deployment fails immediately instead of on first request.
@@ -22,6 +33,8 @@ pub struct AppConfig {
     pub gemini_model: String,
     pub db_max_connections: u32,
     pub db_acquire_timeout: Duration,
+    pub ai_token_budget: u64,
+    pub ai_pricing: TokenPricing,
 }
 
 impl AppConfig {
@@ -39,6 +52,11 @@ impl AppConfig {
             gemini_model: optional("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
             db_max_connections: parsed("DB_MAX_CONNECTIONS", 20)?,
             db_acquire_timeout: Duration::from_secs(parsed("DB_ACQUIRE_TIMEOUT_SECS", 5)?),
+            ai_token_budget: parsed("AI_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET)?,
+            ai_pricing: TokenPricing {
+                input_per_mtok: parsed("AI_PRICE_INPUT_PER_MTOK", DEFAULT_PRICE_INPUT_PER_MTOK)?,
+                output_per_mtok: parsed("AI_PRICE_OUTPUT_PER_MTOK", DEFAULT_PRICE_OUTPUT_PER_MTOK)?,
+            },
         })
     }
 

@@ -3,5 +3,6 @@ pub mod messaging;
 pub mod roleplay;
 pub mod sentence;
 pub mod session;
+pub mod usage;
 pub mod user;
 pub mod vocab;

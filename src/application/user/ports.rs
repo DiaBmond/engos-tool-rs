@@ -9,6 +9,9 @@ pub trait UserRepository: Send + Sync {
 
     fn save(&self, user: &User) -> impl Future<Output = AppResult<()>> + Send;
 
+    /// Erases the learner and everything that cascades from them.
+    fn delete(&self, user_id: &str) -> impl Future<Output = AppResult<()>> + Send;
+
     /// Liveness probe for the health endpoint.
     fn ping(&self) -> impl Future<Output = AppResult<()>> + Send;
 }
@@ -25,10 +28,17 @@ pub trait UserUseCase: Send + Sync {
     ///
     /// This is the single entry point for progression — every mode goes through
     /// it so the level-up rule cannot drift between them.
-    fn award_progress(&self, user: &mut User) -> impl Future<Output = AppResult<bool>> + Send;
+    fn award_progress(
+        &self,
+        user: &mut User,
+        points: u16,
+    ) -> impl Future<Output = AppResult<bool>> + Send;
 
-    /// Applies the failure penalty and persists the result.
-    fn penalize(&self, user: &mut User) -> impl Future<Output = AppResult<()>> + Send;
+    /// Applies a failure penalty and persists the result.
+    fn penalize(&self, user: &mut User, points: u16) -> impl Future<Output = AppResult<()>> + Send;
+
+    /// Erases the learner's account and all data that cascades from it.
+    fn delete_account(&self, user_id: &str) -> impl Future<Output = AppResult<()>> + Send;
 
     fn health_check(&self) -> impl Future<Output = AppResult<()>> + Send;
 }

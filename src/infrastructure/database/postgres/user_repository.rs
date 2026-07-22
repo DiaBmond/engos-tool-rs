@@ -61,6 +61,15 @@ impl UserRepository for PostgresUserRepository {
         Ok(())
     }
 
+    async fn delete(&self, user_id: &str) -> AppResult<()> {
+        // user_vocabs and sentences cascade; ai_usage is intentionally not
+        // linked to a user, so token accounting survives an erasure.
+        sqlx::query!("DELETE FROM users WHERE user_id = $1", user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn ping(&self) -> AppResult<()> {
         sqlx::query!("SELECT 1 AS ok").fetch_one(&self.pool).await?;
         Ok(())

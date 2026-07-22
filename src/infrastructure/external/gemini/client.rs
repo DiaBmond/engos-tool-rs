@@ -3,8 +3,10 @@ use std::time::Duration;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::domain::error::{AppError, AppResult, Secret, redact_secrets};
+use crate::domain::usage::{AiFeature, TokenUsage, UsageEvent};
 
 const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -18,6 +20,9 @@ pub struct GeminiClient {
     http_client: Client,
     api_key: Secret,
     model: String,
+    /// Where token accounting is sent. Unbounded and non-blocking so a slow or
+    /// failing usage writer can never delay or fail a learner's turn.
+    usage_tx: Option<UnboundedSender<UsageEvent>>,
 }
 
 impl GeminiClient {
@@ -34,7 +39,52 @@ impl GeminiClient {
             http_client,
             api_key: Secret::new(api_key),
             model,
+            usage_tx: None,
         })
+    }
+
+    /// Attaches the token-accounting channel.
+    pub fn with_usage_channel(mut self, tx: UnboundedSender<UsageEvent>) -> Self {
+        self.usage_tx = Some(tx);
+        self
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn record_usage(&self, feature: AiFeature, usage: TokenUsage) {
+        if usage.is_empty() {
+            return;
+        }
+
+        if let Some(tx) = &self.usage_tx {
+            // A closed channel means the writer task is gone; accounting is not
+            // worth failing a turn over.
+            let _ = tx.send(UsageEvent {
+                model: self.model.clone(),
+                feature,
+                usage,
+            });
+        }
+    }
+
+    /// Reads `usageMetadata` from a response. Absent on some error shapes, in
+    /// which case the call simply is not counted.
+    fn extract_usage(res: &Value) -> TokenUsage {
+        let Some(meta) = res.get("usageMetadata") else {
+            return TokenUsage::default();
+        };
+
+        let field = |name: &str| meta.get(name).and_then(Value::as_u64).unwrap_or(0) as u32;
+
+        TokenUsage::new(
+            field("promptTokenCount"),
+            // Thinking tokens are billed as output, so fold them in rather than
+            // under-reporting spend.
+            field("candidatesTokenCount") + field("thoughtsTokenCount"),
+            field("totalTokenCount"),
+        )
     }
 
     async fn call_api(&self, request_body: &Value) -> AppResult<Value> {
@@ -112,6 +162,7 @@ impl GeminiClient {
 
     pub(crate) async fn generate_json<T: DeserializeOwned>(
         &self,
+        feature: AiFeature,
         system_instruction: Option<&str>,
         user_prompt: &str,
     ) -> AppResult<T> {
@@ -129,6 +180,11 @@ impl GeminiClient {
         }
 
         let response_json = self.call_api(&body).await?;
+
+        // Recorded before parsing: the tokens were spent whether or not the
+        // payload turns out to be usable.
+        self.record_usage(feature, Self::extract_usage(&response_json));
+
         let raw_text = Self::extract_text(&response_json)?;
         let cleaned = Self::strip_code_fence(&raw_text);
 
@@ -178,5 +234,41 @@ mod tests {
     fn missing_candidates_is_a_parse_error() {
         let err = GeminiClient::extract_text(&json!({})).unwrap_err();
         assert!(matches!(err, AppError::AiParse(_)));
+    }
+
+    #[test]
+    fn reads_token_counts_from_usage_metadata() {
+        let res = json!({
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 45,
+                "totalTokenCount": 165
+            }
+        });
+        let usage = GeminiClient::extract_usage(&res);
+        assert_eq!(usage.prompt_tokens, 120);
+        assert_eq!(usage.output_tokens, 45);
+        assert_eq!(usage.total_tokens, 165);
+    }
+
+    /// Thinking tokens are billed but reported separately; omitting them would
+    /// under-report spend on reasoning models.
+    #[test]
+    fn folds_thinking_tokens_into_output() {
+        let res = json!({
+            "usageMetadata": {
+                "promptTokenCount": 100,
+                "candidatesTokenCount": 40,
+                "thoughtsTokenCount": 60,
+                "totalTokenCount": 200
+            }
+        });
+        let usage = GeminiClient::extract_usage(&res);
+        assert_eq!(usage.output_tokens, 100, "40 visible + 60 thinking");
+    }
+
+    #[test]
+    fn missing_usage_metadata_is_not_counted() {
+        assert!(GeminiClient::extract_usage(&json!({})).is_empty());
     }
 }

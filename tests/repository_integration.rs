@@ -16,13 +16,16 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use engos_tool_rs::application::sentence::ports::SentenceRepository;
+use engos_tool_rs::application::usage::ports::UsageRepository;
 use engos_tool_rs::application::user::ports::UserRepository;
 use engos_tool_rs::application::vocab::ports::VocabRepository;
 use engos_tool_rs::domain::sentence::Sentence;
+use engos_tool_rs::domain::usage::{AiFeature, TokenUsage, UsageEvent};
 use engos_tool_rs::domain::user::User;
 use engos_tool_rs::domain::user_vocab::UserVocab;
 use engos_tool_rs::domain::vocab::{Vocab, VocabCategory};
 use engos_tool_rs::infrastructure::database::postgres::sentence_repository::PostgresSentenceRepository;
+use engos_tool_rs::infrastructure::database::postgres::usage_repository::PostgresUsageRepository;
 use engos_tool_rs::infrastructure::database::postgres::user_repository::PostgresUserRepository;
 use engos_tool_rs::infrastructure::database::postgres::vocab_repository::PostgresVocabRepository;
 
@@ -440,4 +443,150 @@ async fn register_round_is_atomic_and_returns_persisted_ids() {
 
     let created: Vec<String> = round.into_iter().map(|v| v.vocab_id).collect();
     cleanup(&pool, &user_id, &created).await;
+}
+
+/// Token accounting must batch-insert and aggregate correctly, and must survive
+/// an account erasure — it is not personal data and is deliberately unlinked
+/// from users.
+#[tokio::test]
+async fn ai_usage_is_batched_aggregated_and_survives_account_deletion() {
+    let Some(pool) = pool().await else { return };
+    let repo = PostgresUsageRepository::new(pool.clone());
+    let marker = test_id("model");
+
+    let events = vec![
+        UsageEvent {
+            model: marker.clone(),
+            feature: AiFeature::VocabGenerate,
+            usage: TokenUsage::new(100, 50, 0),
+        },
+        UsageEvent {
+            model: marker.clone(),
+            feature: AiFeature::RoleplayTurn,
+            usage: TokenUsage::new(200, 80, 0),
+        },
+        UsageEvent {
+            model: marker.clone(),
+            feature: AiFeature::RoleplayTurn,
+            usage: TokenUsage::new(300, 20, 0),
+        },
+    ];
+    repo.record_batch(&events).await.expect("record batch");
+
+    // Scoped to this run's marker so a shared database cannot skew the check.
+    let row = sqlx::query(
+        "SELECT COUNT(*) AS calls, COALESCE(SUM(total_tokens),0)::bigint AS total
+         FROM ai_usage WHERE model = $1",
+    )
+    .bind(&marker)
+    .fetch_one(&pool)
+    .await
+    .expect("read usage");
+    assert_eq!(row.get::<i64, _>("calls"), 3);
+    assert_eq!(row.get::<i64, _>("total"), 750, "150 + 280 + 320");
+
+    // The aggregate query itself must return something sane over the window.
+    let summary = repo.summarize(30).await.expect("summarize");
+    assert!(summary.calls >= 3);
+    assert!(
+        summary
+            .by_feature
+            .iter()
+            .any(|f| f.feature == "roleplay_turn"),
+        "per-feature breakdown missing"
+    );
+
+    // Deleting a user must not remove usage history.
+    let user_id = test_id("U_usage");
+    seed_user(&pool, &user_id).await;
+    PostgresUserRepository::new(pool.clone())
+        .delete(&user_id)
+        .await
+        .expect("delete user");
+
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ai_usage WHERE model = $1")
+        .bind(&marker)
+        .fetch_one(&pool)
+        .await
+        .expect("recount");
+    assert_eq!(after, 3, "usage accounting must outlive an erased account");
+
+    let _ = sqlx::query("DELETE FROM ai_usage WHERE model = $1")
+        .bind(&marker)
+        .execute(&pool)
+        .await;
+}
+
+/// Erasing an account must take the learner's vocabulary progress and sentence
+/// history with it.
+#[tokio::test]
+async fn deleting_a_user_cascades_to_their_learning_data() {
+    let Some(pool) = pool().await else { return };
+    let user_repo = PostgresUserRepository::new(pool.clone());
+    let vocab_repo = PostgresVocabRepository::new(pool.clone());
+    let user_id = test_id("U_erase");
+    seed_user(&pool, &user_id).await;
+
+    let vocab = vocab_repo
+        .save_vocab(&Vocab::new(
+            Uuid::new_v4().to_string(),
+            test_id("erase"),
+            "คำ".into(),
+            VocabCategory::Daily,
+        ))
+        .await
+        .expect("save vocab");
+    vocab_repo
+        .upsert_user_vocab(&UserVocab::new(user_id.clone(), vocab.vocab_id.clone()))
+        .await
+        .expect("link");
+
+    PostgresSentenceRepository::new(pool.clone())
+        .save_sentence(&Sentence::new(
+            Uuid::new_v4().to_string(),
+            user_id.clone(),
+            "I has a pen".into(),
+        ))
+        .await
+        .expect("save sentence");
+
+    user_repo.delete(&user_id).await.expect("delete");
+
+    let orphan_vocabs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_vocabs WHERE user_id = $1")
+            .bind(&user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count user_vocabs");
+    assert_eq!(orphan_vocabs, 0, "user_vocabs rows survived the erasure");
+
+    let orphan_sentences: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sentences WHERE user_id = $1")
+            .bind(&user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count sentences");
+    assert_eq!(orphan_sentences, 0, "sentences rows survived the erasure");
+    assert!(
+        user_repo
+            .find_by_id(&user_id)
+            .await
+            .expect("lookup")
+            .is_none(),
+        "the user row must be gone"
+    );
+
+    // The shared vocabulary entry is library data, not personal data.
+    assert!(
+        vocab_repo
+            .find_vocab_by_id(&vocab.vocab_id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "shared vocabulary must not be deleted with a user"
+    );
+    let _ = sqlx::query("DELETE FROM vocabs WHERE vocab_id = $1")
+        .bind(&vocab.vocab_id)
+        .execute(&pool)
+        .await;
 }

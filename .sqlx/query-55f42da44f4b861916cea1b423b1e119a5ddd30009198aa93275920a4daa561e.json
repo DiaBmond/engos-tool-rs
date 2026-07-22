@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT v.word\n            FROM user_vocabs uv\n            JOIN vocabs v ON uv.vocab_id = v.vocab_id\n            WHERE uv.user_id = $1 AND uv.correct_count >= 3\n            ORDER BY uv.correct_count DESC\n            LIMIT $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "word",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "vocabs",
+            "name": "word"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "55f42da44f4b861916cea1b423b1e119a5ddd30009198aa93275920a4daa561e"
+}

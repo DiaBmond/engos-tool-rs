@@ -13,9 +13,11 @@ pub trait SentenceRepository: Send + Sync {
 
 /// Driven port: sentence coaching.
 pub trait SentenceAiPort: Send + Sync {
+    /// `level` sets how strictly the draft is graded.
     fn analyze_sentence(
         &self,
         current_text: &str,
+        level: u8,
     ) -> impl Future<Output = AppResult<SentenceAnalysisResult>> + Send;
 }
 
@@ -44,5 +46,6 @@ pub trait SentenceUseCase: Send + Sync {
         draft_text: &str,
         original_text: Option<&str>,
         fix_count: u8,
+        level: u8,
     ) -> impl Future<Output = AppResult<DraftOutcome>> + Send;
 }

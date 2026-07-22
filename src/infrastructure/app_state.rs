@@ -6,12 +6,14 @@ use crate::application::deps::AppDeps;
 use crate::application::roleplay::roleplay_service::RoleplayService;
 use crate::application::sentence::sentence_service::SentenceService;
 use crate::application::session::ports::ChatStateRepository;
+use crate::application::usage::usage_service::UsageService;
 use crate::application::user::ports::UserUseCase;
 use crate::application::user::user_service::UserService;
 use crate::application::vocab::vocab_service::VocabService;
 use crate::domain::error::AppResult;
 use crate::infrastructure::config::AppConfig;
 use crate::infrastructure::database::postgres::sentence_repository::PostgresSentenceRepository;
+use crate::infrastructure::database::postgres::usage_repository::PostgresUsageRepository;
 use crate::infrastructure::database::postgres::user_repository::PostgresUserRepository;
 use crate::infrastructure::database::postgres::vocab_repository::PostgresVocabRepository;
 use crate::infrastructure::database::redis_repo::RedisSessionRepository;
@@ -22,6 +24,7 @@ pub type AppVocabService = VocabService<PostgresVocabRepository, GeminiClient>;
 pub type AppSentenceService = SentenceService<PostgresSentenceRepository, GeminiClient>;
 pub type AppRoleplayService = RoleplayService<GeminiClient>;
 pub type AppUserService = UserService<PostgresUserRepository>;
+pub type AppUsageService = UsageService<PostgresUsageRepository>;
 
 /// The production wiring of [`AppDeps`].
 ///
@@ -36,6 +39,7 @@ pub struct AppState {
     vocab_service: Arc<AppVocabService>,
     sentence_service: Arc<AppSentenceService>,
     roleplay_service: Arc<AppRoleplayService>,
+    usage_service: Arc<AppUsageService>,
 }
 
 impl AppState {
@@ -62,6 +66,13 @@ impl AppState {
 
         let roleplay_service = RoleplayService::new(gemini_client);
 
+        let usage_service = UsageService::new(
+            PostgresUsageRepository::new(pg_pool),
+            config.ai_token_budget,
+            config.ai_pricing,
+            config.gemini_model.clone(),
+        );
+
         Self {
             config: Arc::new(config),
             session_repo: Arc::new(session_repo),
@@ -70,6 +81,7 @@ impl AppState {
             vocab_service: Arc::new(vocab_service),
             sentence_service: Arc::new(sentence_service),
             roleplay_service: Arc::new(roleplay_service),
+            usage_service: Arc::new(usage_service),
         }
     }
 
@@ -87,6 +99,7 @@ impl AppDeps for AppState {
     type Roleplay = AppRoleplayService;
     type Session = RedisSessionRepository;
     type Messaging = LineClient;
+    type Usage = AppUsageService;
 
     fn users(&self) -> &Self::Users {
         &self.user_service
@@ -110,6 +123,10 @@ impl AppDeps for AppState {
 
     fn messaging(&self) -> &Self::Messaging {
         &self.line_client
+    }
+
+    fn usage(&self) -> &Self::Usage {
+        &self.usage_service
     }
 
     fn line_channel_secret(&self) -> &str {

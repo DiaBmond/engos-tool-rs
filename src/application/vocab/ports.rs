@@ -51,11 +51,25 @@ pub trait VocabRepository: Send + Sync {
         user_id: &str,
         limit: usize,
     ) -> impl Future<Output = AppResult<Vec<(Vocab, UserVocab)>>> + Send;
+
+    /// Words the learner has recalled correctly often enough to be considered
+    /// known, used to steer generation away from them.
+    fn get_mastered_words(
+        &self,
+        user_id: &str,
+        limit: usize,
+    ) -> impl Future<Output = AppResult<Vec<String>>> + Send;
 }
 
 /// Driven port: vocabulary generation and grading.
 pub trait VocabAiPort: Send + Sync {
-    fn generate_three_vocabs(&self) -> impl Future<Output = AppResult<Vec<Vocab>>> + Send;
+    /// `avoid` lists words the learner has already mastered, so the model does
+    /// not keep serving what they know.
+    fn generate_three_vocabs(
+        &self,
+        level: u8,
+        avoid: &[String],
+    ) -> impl Future<Output = AppResult<Vec<Vocab>>> + Send;
 
     fn evaluate_vocab_guess(
         &self,
@@ -66,7 +80,11 @@ pub trait VocabAiPort: Send + Sync {
 
 /// Driving port: what the transport layer may do with vocabulary.
 pub trait VocabUseCase: Send + Sync {
-    fn start_new_round(&self, user_id: &str) -> impl Future<Output = AppResult<Vec<Vocab>>> + Send;
+    fn start_new_round(
+        &self,
+        user_id: &str,
+        level: u8,
+    ) -> impl Future<Output = AppResult<Vec<Vocab>>> + Send;
 
     /// Fetches a word the conversation state refers to. A missing id means the
     /// stored state no longer matches the database.

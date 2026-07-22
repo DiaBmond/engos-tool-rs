@@ -10,8 +10,13 @@ pub const VOCAB_ROUND_SIZE: usize = 3;
 /// wrong guess costs one AI call.
 pub const MAX_VOCAB_ATTEMPTS: u8 = 3;
 
-/// Conversational turns in a roleplay session before it is graded.
-pub const ROLEPLAY_TOTAL_TURNS: u8 = 5;
+/// Conversational turns in a roleplay session.
+///
+/// The learner sends exactly this many messages and receives a reply to each;
+/// the final reply carries the evaluation. The previous arrangement announced
+/// five turns but produced only four replies, because the last message went
+/// straight to grading.
+pub const ROLEPLAY_TOTAL_TURNS: u8 = 10;
 
 /// How long an idle conversation keeps its state, in seconds.
 pub const STATE_TTL_SECONDS: u64 = 3600;
@@ -57,6 +62,10 @@ pub enum ChatState {
         scenario: RoleplayScenario,
         history: Vec<RoleplayTurn>,
     },
+
+    /// Waiting for the learner to confirm erasure of their account.
+    /// Destructive and irreversible, so it is never a single keystroke.
+    ConfirmDeletion,
 }
 
 impl ChatState {
@@ -68,6 +77,7 @@ impl ChatState {
             Self::VocabReviewing { .. } => "vocab_reviewing",
             Self::SentenceDraft { .. } => "sentence_draft",
             Self::Roleplay { .. } => "roleplay",
+            Self::ConfirmDeletion => "confirm_deletion",
         }
     }
 }
@@ -112,6 +122,7 @@ mod tests {
                     ai_message: "Hi!".into(),
                 }],
             },
+            ChatState::ConfirmDeletion,
         ];
 
         for state in states {

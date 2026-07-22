@@ -35,14 +35,33 @@ the AI.
 | **Vocab** | `1`, `vocab`, `ทายศัพท์` | Gemini generates 3 words (Daily / Native / Tech). The learner recalls each from its Thai definition. Three attempts per word, then the answer is revealed. |
 | **Review** | `2`, `review`, `ทบทวนศัพท์` | Replays previously seen words, weakest first, using spaced-repetition ordering. |
 | **Sentence** | `3`, `sentence`, `แต่งประโยค` | The learner drafts an English sentence; the AI coach gives hints in Thai without revealing the answer, and the draft chain is tracked until it passes. |
-| **Roleplay** | `4`, `roleplay`, `โรลเพลย์` | A 5-turn scenario matched to the learner's level. The session is graded at the end and awards or removes progress. |
+| **Roleplay** | `4`, `roleplay`, `โรลเพลย์` | A 10-turn software-engineering scenario matched to the learner's level. Every turn gets a reply in character; the last one carries the evaluation. |
+| **Usage** | `5`, `usage`, `สถิติ` | Tokens spent over the last 30 days, an estimated cost, the share of the configured budget used, and a per-mode breakdown. |
 
 Type `ยกเลิก`, `ออก`, `exit`, or `cancel` at any point to return to the menu.
+Type `ลบข้อมูล` (or `delete my data`) to erase the account; it requires an
+explicit confirmation phrase.
 
-**Progression.** Learners start at level 1. Five successful sessions advance one
-level, up to level 4. A failed roleplay costs one point. All progression flows
-through a single domain rule (`User::award_progress`), so every mode shares the
-same definition of levelling up.
+**Progression.** Learners start at level 1 and need 10 points per level, up to
+level 4. Activities are weighted by effort so that repeating the cheapest mode
+is not the fastest route to the top:
+
+| Activity | Points |
+|----------|--------|
+| Vocab round (3 words) | +1 |
+| Review session | +1 |
+| Sentence passed | +1 |
+| Roleplay passed (10 turns) | +4 |
+| Roleplay failed | −2 |
+
+All progression flows through one domain rule (`User::award_progress`), so no
+mode can drift from the others. The weights live as constants in
+`src/domain/user.rs` and are safe to retune.
+
+**Level actually changes the work.** `domain::difficulty` maps the learner's
+level onto vocabulary difficulty, sentence grading strictness, and roleplay
+scenario intensity, and every mode is given a software-engineering framing from
+level 1 upward.
 
 ---
 
@@ -183,6 +202,9 @@ request.
 | `LINE_CHANNEL_ACCESS_TOKEN` | ✅ | — | LINE Messaging API token |
 | `GEMINI_API_KEY` | ✅ | — | Google Gemini API key |
 | `GEMINI_MODEL` | — | `gemini-2.5-flash` | Model id |
+| `AI_TOKEN_BUDGET` | — | `1000000` | Allowance the usage report measures "remaining" against. Not enforced. |
+| `AI_PRICE_INPUT_PER_MTOK` | — | `0.30` | USD per million input tokens, for the cost estimate |
+| `AI_PRICE_OUTPUT_PER_MTOK` | — | `2.50` | USD per million output tokens. Verify against current provider pricing. |
 | `HOST` | — | `0.0.0.0` | Bind address |
 | `PORT` | — | `8080` | Bind port |
 | `DB_MAX_CONNECTIONS` | — | `20` | PostgreSQL pool size |
@@ -332,6 +354,7 @@ every database-less build, including the Docker image.
 | `vocabs` | Vocabulary pool, unique on `(word, category)` |
 | `user_vocabs` | Per-learner progress: `seen_count`, `correct_count`, `last_reviewed_at` |
 | `sentences` | Draft chains: `original_text`, `final_text`, `total_fix`, `is_passed` |
+| `ai_usage` | Token accounting per AI call. Deliberately not linked to a user, so it is not personal data and survives an erasure. |
 
 `user_vocabs` deliberately separates exposure (`seen_count`) from mastery
 (`correct_count`). Review ordering is
@@ -352,6 +375,7 @@ on first start.
 - `001_init.sql` — baseline schema
 - `002_spaced_repetition.sql` — idempotent upgrade for databases created from an
   earlier schema; a no-op on a fresh database
+- `003_ai_usage.sql` — token accounting table
 
 Applying migrations to an existing database:
 
@@ -448,21 +472,33 @@ Defined in `src/domain/chat_state.rs` and `src/infrastructure/http/line_webhook.
 |----------|-------|---------|
 | `VOCAB_ROUND_SIZE` | 3 | Words per vocab round |
 | `MAX_VOCAB_ATTEMPTS` | 3 | Guesses before the answer is revealed |
-| `ROLEPLAY_TOTAL_TURNS` | 5 | Turns before a session is graded |
+| `ROLEPLAY_TOTAL_TURNS` | 10 | Turns per roleplay session; the last one is graded |
 | `STATE_TTL_SECONDS` | 3600 | Conversation state lifetime |
 | `TURN_DEADLINE` | 45s | Hard ceiling on one turn |
 | `LOCK_TTL_SECONDS` | 90 | Per-user lock lifetime |
 | `EVENT_DEDUP_TTL_SECONDS` | 600 | Retry suppression window |
-| `STACK_TO_LEVEL_UP` | 5 | Successful sessions per level |
+| `STACK_TO_LEVEL_UP` | 10 | Points per level |
 | `MAX_LEVEL` | 4 | Level ceiling |
 
-### Known limitation
+### AI spend
 
-There is **no per-user rate limit**. Signature verification blocks anonymous
-abuse and `MAX_VOCAB_ATTEMPTS` bounds one obvious loop, but an authenticated
-learner can still send messages continuously, and each message costs one or more
-Gemini calls. Add a per-user daily quota before exposing this to an untrusted
-audience.
+Token usage is recorded for every AI call and reported through menu option `5`.
+Recording is fire-and-forget: the Gemini client pushes to an unbounded channel
+that a detached writer drains in batches, so accounting can never slow down or
+fail a learner's turn.
+
+There is **no per-user rate limit**, by design — this is a personal tool for a
+handful of people, and signature verification already blocks anonymous abuse.
+The usage report exists so spend stays visible rather than capped. Add a quota
+before exposing the bot to an untrusted audience.
+
+### Data erasure
+
+`ลบข้อมูล` starts a two-step deletion. The learner must type the confirmation
+phrase verbatim; anything else leaves the account untouched. Confirming removes
+the user row, which cascades to their vocabulary progress and sentence history.
+Shared vocabulary entries and token accounting are not personal data and are
+kept.
 
 ---
 
@@ -472,7 +508,9 @@ audience.
 src/
 ├── domain/                     Entities and rules; no I/O
 │   ├── error.rs                AppError, Secret, redact_secrets
-│   ├── user.rs                 Progression rules
+│   ├── user.rs                 Progression rules and reward weights
+│   ├── difficulty.rs           Level → difficulty for every mode
+│   ├── usage.rs                Token accounting and cost estimation
 │   ├── vocab.rs                Vocab, VocabCategory
 │   ├── user_vocab.rs           Spaced-repetition counters
 │   ├── sentence.rs             Draft chain
@@ -480,6 +518,7 @@ src/
 │
 ├── application/                Use cases and port traits
 │   ├── deps.rs                 AppDeps — the seam handlers depend on
+│   ├── usage/                  UsageRepository, UsageUseCase
 │   ├── user/                   UserRepository, UserUseCase, UserService
 │   ├── vocab/                  VocabRepository, VocabAiPort, VocabUseCase, VocabService
 │   ├── sentence/               SentenceRepository, SentenceAiPort, SentenceUseCase
@@ -492,6 +531,7 @@ src/
 │   ├── app_state.rs            Dependency wiring
 │   ├── server.rs               Router, middleware, graceful shutdown
 │   ├── telemetry.rs            tracing setup
+│   ├── usage_writer.rs         Batching background writer for token usage
 │   ├── http/
 │   │   ├── line_webhook.rs     Webhook handler and mode dispatch
 │   │   ├── line_webhook_tests.rs  State-machine tests using fakes

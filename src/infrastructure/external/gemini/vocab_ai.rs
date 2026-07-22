@@ -5,7 +5,9 @@ use super::client::GeminiClient;
 use super::prompt::sanitize_for_prompt;
 use crate::application::vocab::dto::VocabEvaluation;
 use crate::application::vocab::ports::VocabAiPort;
+use crate::domain::difficulty::vocab_guidance;
 use crate::domain::error::AppResult;
+use crate::domain::usage::AiFeature;
 use crate::domain::vocab::{Vocab, VocabCategory};
 
 const TEACHER_PERSONA: &str = "You are an expert English teacher for developers.";
@@ -18,18 +20,37 @@ struct GeminiVocabResponse {
 }
 
 impl VocabAiPort for GeminiClient {
-    async fn generate_three_vocabs(&self) -> AppResult<Vec<Vocab>> {
-        let prompt = r#"Generate exactly 3 English vocabulary words, one from each of the following categories:
+    async fn generate_three_vocabs(&self, level: u8, avoid: &[String]) -> AppResult<Vec<Vocab>> {
+        // Difficulty follows the learner's level. Without this the prompt was
+        // identical for everyone, so levelling up changed nothing about the
+        // words served.
+        let avoid_clause = if avoid.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\n            Do NOT choose any of these words, the learner already knows them: {}.",
+                avoid.join(", ")
+            )
+        };
+
+        let prompt = format!(
+            r#"Generate exactly 3 English vocabulary words, one from each of the following categories:
             1. "Daily": Common words used in everyday conversation.
             2. "Native": Natural expressions, idioms, or phrasal verbs used by native speakers.
             3. "Tech": Professional terms specific to software development and IT.
 
+            Difficulty to target:
+            "{guidance}"
+
             The "definition" must be written in Thai.
             Return the result as a JSON array of objects with fields: "word", "definition", "category".
-            Ensure the "category" value matches "Daily", "Native", or "Tech" exactly."#;
+            Ensure the "category" value matches "Daily", "Native", or "Tech" exactly.{avoid_clause}"#,
+            guidance = vocab_guidance(level),
+        );
 
-        let raw: Vec<GeminiVocabResponse> =
-            self.generate_json(Some(TEACHER_PERSONA), prompt).await?;
+        let raw: Vec<GeminiVocabResponse> = self
+            .generate_json(AiFeature::VocabGenerate, Some(TEACHER_PERSONA), &prompt)
+            .await?;
 
         Ok(raw
             .into_iter()
@@ -68,6 +89,7 @@ impl VocabAiPort for GeminiClient {
             guess = guess,
         );
 
-        self.generate_json(Some(TEACHER_PERSONA), &prompt).await
+        self.generate_json(AiFeature::VocabEvaluate, Some(TEACHER_PERSONA), &prompt)
+            .await
     }
 }

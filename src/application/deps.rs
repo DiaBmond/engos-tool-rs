@@ -2,6 +2,7 @@ use crate::application::messaging::ports::MessagingPort;
 use crate::application::roleplay::ports::RoleplayUseCase;
 use crate::application::sentence::ports::SentenceUseCase;
 use crate::application::session::ports::{ChatStateRepository, SessionLockRepository};
+use crate::application::usage::ports::UsageUseCase;
 use crate::application::user::ports::UserUseCase;
 use crate::application::vocab::ports::VocabUseCase;
 
@@ -23,6 +24,7 @@ pub trait AppDeps: Clone + Send + Sync + 'static {
     type Roleplay: RoleplayUseCase;
     type Session: ChatStateRepository + SessionLockRepository;
     type Messaging: MessagingPort;
+    type Usage: UsageUseCase;
 
     fn users(&self) -> &Self::Users;
     fn vocab(&self) -> &Self::Vocab;
@@ -30,6 +32,7 @@ pub trait AppDeps: Clone + Send + Sync + 'static {
     fn roleplay(&self) -> &Self::Roleplay;
     fn session(&self) -> &Self::Session;
     fn messaging(&self) -> &Self::Messaging;
+    fn usage(&self) -> &Self::Usage;
 
     /// Secret used to verify the `x-line-signature` header.
     fn line_channel_secret(&self) -> &str;

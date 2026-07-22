@@ -25,6 +25,7 @@ impl<R: SentenceRepository, A: SentenceAiPort> SentenceUseCase for SentenceServi
         draft_text: &str,
         original_text: Option<&str>,
         fix_count: u8,
+        level: u8,
     ) -> AppResult<DraftOutcome> {
         let first_draft = original_text.unwrap_or(draft_text).to_string();
 
@@ -36,7 +37,7 @@ impl<R: SentenceRepository, A: SentenceAiPort> SentenceUseCase for SentenceServi
             fix_count,
         );
 
-        let analysis = self.ai.analyze_sentence(draft_text).await?;
+        let analysis = self.ai.analyze_sentence(draft_text, level).await?;
 
         if analysis.is_passed {
             sentence.mark_as_passed(analysis.feedback.clone());

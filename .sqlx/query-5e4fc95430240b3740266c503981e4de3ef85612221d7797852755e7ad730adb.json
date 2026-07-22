@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                feature,\n                COUNT(*)                      AS \"calls!\",\n                COALESCE(SUM(total_tokens), 0) AS \"total!\"\n            FROM ai_usage\n            WHERE created_at >= NOW() - $1::interval\n            GROUP BY feature\n            ORDER BY 3 DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "feature",
+        "type_info": "Varchar",
+        "origin": {
+          "Table": {
+            "table": "ai_usage",
+            "name": "feature"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "calls!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Interval"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "5e4fc95430240b3740266c503981e4de3ef85612221d7797852755e7ad730adb"
+}

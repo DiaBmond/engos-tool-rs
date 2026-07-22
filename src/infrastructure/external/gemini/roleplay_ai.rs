@@ -7,7 +7,9 @@ use super::prompt::sanitize_for_prompt;
 use crate::application::roleplay::dto::{RoleplayEvaluation, RoleplayReply, RoleplayScenario};
 use crate::application::roleplay::ports::RoleplayAiPort;
 use crate::domain::chat_state::RoleplayTurn;
+use crate::domain::difficulty::roleplay_guidance;
 use crate::domain::error::AppResult;
+use crate::domain::usage::AiFeature;
 
 #[derive(Debug, Deserialize)]
 struct GeminiScenarioResponse {
@@ -45,24 +47,6 @@ fn render_history(history: &[RoleplayTurn]) -> String {
     text
 }
 
-fn difficulty_for(level: u8) -> &'static str {
-    match level {
-        1 => {
-            "Level 1 (Beginner): Simple daily life situations such as ordering food, asking for directions, or shopping (use basic vocabulary and short sentences)."
-        }
-        2 => {
-            "Level 2 (Intermediate): Workplace or travel situations requiring problem-solving, such as checking into a fully booked hotel or discussing a task with a foreign colleague."
-        }
-        3 => {
-            "Level 3 (Advanced): High-confidence situations requiring explanation and negotiation, such as a Tech job interview, negotiating with a client, or presenting a project."
-        }
-        4 => {
-            "Level 4 (Native/Master): High-pressure crisis management, such as explaining a Production Outage to executives or resolving a business dispute."
-        }
-        _ => "Level 1 (Beginner): General daily life situations.",
-    }
-}
-
 impl RoleplayAiPort for GeminiClient {
     async fn generate_scenario(&self, level: u8) -> AppResult<RoleplayScenario> {
         let prompt = format!(
@@ -74,11 +58,12 @@ impl RoleplayAiPort for GeminiClient {
             - "role_name": Name and persona of the character the AI will play (e.g., "John, an angry senior developer").
             - "setting": A clear explanation of the context in Thai, explicitly stating who the "User" plays as and their objective to succeed in this roleplay.
             - "opening_line": The very first opening line from the AI character to the user in English, staying perfectly in character."#,
-            difficulty = difficulty_for(level)
+            difficulty = roleplay_guidance(level)
         );
 
         let parsed: GeminiScenarioResponse = self
             .generate_json(
+                AiFeature::RoleplayScenario,
                 Some("You are an expert English roleplay director."),
                 &prompt,
             )
@@ -118,6 +103,7 @@ impl RoleplayAiPort for GeminiClient {
 
         let parsed: GeminiReplyResponse = self
             .generate_json(
+                AiFeature::RoleplayTurn,
                 Some("You are a talented actor and English teacher roleplaying a character."),
                 &prompt,
             )
@@ -158,6 +144,7 @@ impl RoleplayAiPort for GeminiClient {
 
         let parsed: GeminiEvalResponse = self
             .generate_json(
+                AiFeature::RoleplayEvaluate,
                 Some("You are a strict but encouraging English language evaluator."),
                 &prompt,
             )
@@ -204,10 +191,5 @@ mod tests {
         let rendered = render_history(&history);
         assert!(rendered.contains("User: final answer"));
         assert!(!rendered.contains("AI:"));
-    }
-
-    #[test]
-    fn unknown_level_falls_back_to_beginner() {
-        assert!(difficulty_for(99).contains("Beginner"));
     }
 }

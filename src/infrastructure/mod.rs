@@ -5,3 +5,4 @@ pub mod external;
 pub mod http;
 pub mod server;
 pub mod telemetry;
+pub mod usage_writer;

@@ -8,6 +8,10 @@ use crate::domain::vocab::Vocab;
 /// Words offered in one review session.
 const REVIEW_BATCH_SIZE: usize = 10;
 
+/// How many known words are listed in the generation prompt. Capped so the
+/// prompt cannot grow without bound as the learner's library does.
+const AVOID_LIST_SIZE: usize = 40;
+
 pub struct VocabService<R: VocabRepository, A: VocabAiPort> {
     repo: R,
     ai: A,
@@ -20,8 +24,12 @@ impl<R: VocabRepository, A: VocabAiPort> VocabService<R, A> {
 }
 
 impl<R: VocabRepository, A: VocabAiPort> VocabUseCase for VocabService<R, A> {
-    async fn start_new_round(&self, user_id: &str) -> AppResult<Vec<Vocab>> {
-        let generated = self.ai.generate_three_vocabs().await?;
+    async fn start_new_round(&self, user_id: &str, level: u8) -> AppResult<Vec<Vocab>> {
+        let avoid = self
+            .repo
+            .get_mastered_words(user_id, AVOID_LIST_SIZE)
+            .await?;
+        let generated = self.ai.generate_three_vocabs(level, &avoid).await?;
 
         if generated.len() != VOCAB_ROUND_SIZE {
             return Err(AppError::AiParse(format!(

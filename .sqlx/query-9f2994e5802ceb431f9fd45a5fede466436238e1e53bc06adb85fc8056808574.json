@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO ai_usage (model, feature, prompt_tokens, output_tokens, total_tokens)\n            SELECT * FROM UNNEST($1::varchar[], $2::varchar[], $3::int[], $4::int[], $5::int[])\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "VarcharArray",
+        "VarcharArray",
+        "Int4Array",
+        "Int4Array",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f2994e5802ceb431f9fd45a5fede466436238e1e53bc06adb85fc8056808574"
+}

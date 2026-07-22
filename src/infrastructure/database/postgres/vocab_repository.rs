@@ -188,6 +188,25 @@ impl VocabRepository for PostgresVocabRepository {
             .collect())
     }
 
+    async fn get_mastered_words(&self, user_id: &str, limit: usize) -> AppResult<Vec<String>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT v.word
+            FROM user_vocabs uv
+            JOIN vocabs v ON uv.vocab_id = v.vocab_id
+            WHERE uv.user_id = $1 AND uv.correct_count >= 3
+            ORDER BY uv.correct_count DESC
+            LIMIT $2
+            "#,
+            user_id,
+            limit as i64
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| r.word).collect())
+    }
+
     async fn find_vocab_by_id(&self, vocab_id: &str) -> AppResult<Option<Vocab>> {
         let row = sqlx::query!(
             r#"

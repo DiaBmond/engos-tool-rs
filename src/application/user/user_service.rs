@@ -24,15 +24,19 @@ impl<R: UserRepository> UserUseCase for UserService<R> {
         Ok(new_user)
     }
 
-    async fn award_progress(&self, user: &mut User) -> AppResult<bool> {
-        let levelled_up = user.award_progress();
+    async fn award_progress(&self, user: &mut User, points: u16) -> AppResult<bool> {
+        let levelled_up = user.award_progress(points);
         self.repo.save(user).await?;
         Ok(levelled_up)
     }
 
-    async fn penalize(&self, user: &mut User) -> AppResult<()> {
-        user.penalize();
+    async fn penalize(&self, user: &mut User, points: u16) -> AppResult<()> {
+        user.penalize(points);
         self.repo.save(user).await
+    }
+
+    async fn delete_account(&self, user_id: &str) -> AppResult<()> {
+        self.repo.delete(user_id).await
     }
 
     async fn health_check(&self) -> AppResult<()> {

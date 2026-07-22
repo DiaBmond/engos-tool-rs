@@ -14,7 +14,10 @@ use super::*;
 use crate::application::roleplay::dto::{RoleplayEvaluation, RoleplayReply};
 use crate::application::sentence::dto::SentenceAnalysisResult;
 use crate::application::sentence::ports::DraftOutcome;
+use crate::application::usage::ports::UsageReport;
+use crate::application::usage::ports::UsageUseCase;
 use crate::application::vocab::dto::VocabEvaluation;
+use crate::domain::usage::{TokenPricing, UsageSummary};
 use crate::domain::user_vocab::UserVocab;
 use crate::domain::vocab::{Vocab, VocabCategory};
 
@@ -26,8 +29,9 @@ use crate::domain::vocab::{Vocab, VocabCategory};
 struct FakeUsers {
     user: Mutex<Option<User>>,
     saves: Mutex<Vec<User>>,
-    awards: Mutex<u32>,
-    penalties: Mutex<u32>,
+    awards: Mutex<Vec<u16>>,
+    penalties: Mutex<Vec<u16>>,
+    deleted: Mutex<Vec<String>>,
 }
 
 impl UserUseCase for FakeUsers {
@@ -38,19 +42,25 @@ impl UserUseCase for FakeUsers {
             .clone())
     }
 
-    async fn award_progress(&self, user: &mut User) -> AppResult<bool> {
-        *self.awards.lock().unwrap() += 1;
-        let levelled = user.award_progress();
+    async fn award_progress(&self, user: &mut User, points: u16) -> AppResult<bool> {
+        self.awards.lock().unwrap().push(points);
+        let levelled = user.award_progress(points);
         *self.user.lock().unwrap() = Some(user.clone());
         self.saves.lock().unwrap().push(user.clone());
         Ok(levelled)
     }
 
-    async fn penalize(&self, user: &mut User) -> AppResult<()> {
-        *self.penalties.lock().unwrap() += 1;
-        user.penalize();
+    async fn penalize(&self, user: &mut User, points: u16) -> AppResult<()> {
+        self.penalties.lock().unwrap().push(points);
+        user.penalize(points);
         *self.user.lock().unwrap() = Some(user.clone());
         self.saves.lock().unwrap().push(user.clone());
+        Ok(())
+    }
+
+    async fn delete_account(&self, user_id: &str) -> AppResult<()> {
+        self.deleted.lock().unwrap().push(user_id.to_string());
+        *self.user.lock().unwrap() = None;
         Ok(())
     }
 
@@ -65,6 +75,7 @@ struct FakeVocab {
     correct: Mutex<bool>,
     recorded: Mutex<Vec<(String, bool)>>,
     round_started: Mutex<u32>,
+    requested_levels: Mutex<Vec<u8>>,
 }
 
 impl Default for FakeVocab {
@@ -77,13 +88,15 @@ impl Default for FakeVocab {
             correct: Mutex::new(true),
             recorded: Mutex::new(Vec::new()),
             round_started: Mutex::new(0),
+            requested_levels: Mutex::new(Vec::new()),
         }
     }
 }
 
 impl VocabUseCase for FakeVocab {
-    async fn start_new_round(&self, _user_id: &str) -> AppResult<Vec<Vocab>> {
+    async fn start_new_round(&self, _user_id: &str, level: u8) -> AppResult<Vec<Vocab>> {
         *self.round_started.lock().unwrap() += 1;
+        self.requested_levels.lock().unwrap().push(level);
         Ok(self.round.clone())
     }
 
@@ -125,6 +138,7 @@ impl VocabUseCase for FakeVocab {
 struct FakeSentences {
     passes: Mutex<bool>,
     submissions: Mutex<Vec<(String, Option<String>, u8)>>,
+    requested_levels: Mutex<Vec<u8>>,
 }
 
 impl SentenceUseCase for FakeSentences {
@@ -135,7 +149,9 @@ impl SentenceUseCase for FakeSentences {
         draft_text: &str,
         original_text: Option<&str>,
         fix_count: u8,
+        level: u8,
     ) -> AppResult<DraftOutcome> {
+        self.requested_levels.lock().unwrap().push(level);
         self.submissions.lock().unwrap().push((
             draft_text.to_string(),
             original_text.map(str::to_string),
@@ -261,6 +277,33 @@ impl SessionLockRepository for FakeSession {
 }
 
 #[derive(Default)]
+struct FakeUsage {
+    reports: Mutex<u32>,
+}
+
+impl UsageUseCase for FakeUsage {
+    async fn report(&self, days: u32) -> AppResult<UsageReport> {
+        *self.reports.lock().unwrap() += 1;
+        Ok(UsageReport {
+            period_days: days,
+            summary: UsageSummary {
+                calls: 12,
+                prompt_tokens: 3_400,
+                output_tokens: 1_200,
+                total_tokens: 4_600,
+                by_feature: Vec::new(),
+            },
+            budget_tokens: 1_000_000,
+            pricing: TokenPricing {
+                input_per_mtok: 0.30,
+                output_per_mtok: 2.50,
+            },
+            model: "gemini-test".to_string(),
+        })
+    }
+}
+
+#[derive(Default)]
 struct FakeMessaging {
     sent: Mutex<Vec<String>>,
 }
@@ -285,6 +328,7 @@ struct Fakes {
     roleplay: FakeRoleplay,
     session: FakeSession,
     messaging: FakeMessaging,
+    usage: FakeUsage,
 }
 
 #[derive(Clone, Default)]
@@ -297,6 +341,7 @@ impl AppDeps for TestDeps {
     type Roleplay = FakeRoleplay;
     type Session = FakeSession;
     type Messaging = FakeMessaging;
+    type Usage = FakeUsage;
 
     fn users(&self) -> &Self::Users {
         &self.0.users
@@ -315,6 +360,9 @@ impl AppDeps for TestDeps {
     }
     fn messaging(&self) -> &Self::Messaging {
         &self.0.messaging
+    }
+    fn usage(&self) -> &Self::Usage {
+        &self.0.usage
     }
     fn line_channel_secret(&self) -> &str {
         "test_secret"
@@ -529,8 +577,8 @@ async fn finishing_a_round_awards_progress_once_and_clears_state() {
 
     assert_eq!(deps.state(), ChatState::Idle, "round should end");
     assert_eq!(
-        *deps.0.users.awards.lock().unwrap(),
-        1,
+        deps.0.users.awards.lock().unwrap().as_slice(),
+        &[REWARD_VOCAB_ROUND],
         "progress must be awarded exactly once per round"
     );
     assert!(deps.last_message().contains("🏆"));
@@ -568,7 +616,7 @@ async fn stale_state_index_reports_invalid_state_instead_of_panicking() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn finishing_a_review_clears_state_without_awarding_progress() {
+async fn finishing_a_review_awards_progress_and_clears_state() {
     let deps = TestDeps::default();
     deps.set_state(ChatState::VocabReviewing {
         review_list: vec!["v0".to_string()],
@@ -579,9 +627,9 @@ async fn finishing_a_review_clears_state_without_awarding_progress() {
 
     assert_eq!(deps.state(), ChatState::Idle);
     assert_eq!(
-        *deps.0.users.awards.lock().unwrap(),
-        0,
-        "review is practice and does not grant progress"
+        deps.0.users.awards.lock().unwrap().as_slice(),
+        &[REWARD_REVIEW_SESSION],
+        "finishing a review now earns progress"
     );
     assert_eq!(deps.0.vocab.recorded.lock().unwrap().len(), 1);
 }
@@ -650,6 +698,13 @@ async fn roleplay_turn_appends_history_and_advances_the_counter() {
     deps.send("4").await.unwrap();
     deps.send("Hello there").await.unwrap();
 
+    assert!(
+        deps.last_message()
+            .contains(&format!("Turn 1/{ROLEPLAY_TOTAL_TURNS}")),
+        "the learner's first reply must be turn 1, not turn 2: {}",
+        deps.last_message()
+    );
+
     match deps.state() {
         ChatState::Roleplay {
             turn_count,
@@ -692,8 +747,11 @@ async fn passing_the_final_roleplay_turn_awards_progress_and_ends_the_session() 
     deps.send("final answer").await.unwrap();
 
     assert_eq!(*deps.0.roleplay.graded.lock().unwrap(), 1);
-    assert_eq!(*deps.0.users.awards.lock().unwrap(), 1);
-    assert_eq!(*deps.0.users.penalties.lock().unwrap(), 0);
+    assert_eq!(
+        deps.0.users.awards.lock().unwrap().as_slice(),
+        &[REWARD_ROLEPLAY_PASSED]
+    );
+    assert!(deps.0.users.penalties.lock().unwrap().is_empty());
     assert_eq!(deps.state(), ChatState::Idle);
 }
 
@@ -709,8 +767,11 @@ async fn failing_the_final_roleplay_turn_penalizes_instead_of_awarding() {
 
     deps.send("gibberish").await.unwrap();
 
-    assert_eq!(*deps.0.users.awards.lock().unwrap(), 0);
-    assert_eq!(*deps.0.users.penalties.lock().unwrap(), 1);
+    assert!(deps.0.users.awards.lock().unwrap().is_empty());
+    assert_eq!(
+        deps.0.users.penalties.lock().unwrap().as_slice(),
+        &[PENALTY_ROLEPLAY_FAILED]
+    );
     assert_eq!(deps.state(), ChatState::Idle);
 }
 
@@ -729,7 +790,7 @@ async fn roleplay_progression_is_persisted_through_the_user_service() {
 
     let saves = deps.0.users.saves.lock().unwrap();
     assert_eq!(saves.len(), 1, "the graded user must be saved exactly once");
-    assert_eq!(saves[0].progress_stack, 1);
+    assert_eq!(saves[0].progress_stack, REWARD_ROLEPLAY_PASSED);
 }
 
 // ---------------------------------------------------------------------------
@@ -854,4 +915,197 @@ fn turn_deadline_is_shorter_than_the_lock_ttl() {
         TURN_DEADLINE.as_secs() < LOCK_TTL_SECONDS,
         "a turn must finish before its lock expires"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Level actually reaches the AI
+// ---------------------------------------------------------------------------
+
+/// Difficulty used to ignore `current_level` entirely, so levelling up changed
+/// nothing about what the learner was asked to do.
+#[tokio::test]
+async fn vocab_generation_receives_the_learner_level() {
+    let deps = TestDeps::default();
+    *deps.0.users.user.lock().unwrap() = Some(User::from_storage(
+        USER.to_string(),
+        3,
+        0,
+        chrono::Utc::now(),
+    ));
+
+    deps.send("1").await.unwrap();
+
+    assert_eq!(
+        deps.0.vocab.requested_levels.lock().unwrap().as_slice(),
+        &[3],
+        "the learner's level must drive word difficulty"
+    );
+}
+
+#[tokio::test]
+async fn sentence_grading_receives_the_learner_level() {
+    let deps = TestDeps::default();
+    *deps.0.users.user.lock().unwrap() = Some(User::from_storage(
+        USER.to_string(),
+        4,
+        0,
+        chrono::Utc::now(),
+    ));
+
+    deps.send("3").await.unwrap();
+    deps.send("I have a pen").await.unwrap();
+
+    assert_eq!(
+        deps.0.sentences.requested_levels.lock().unwrap().as_slice(),
+        &[4],
+        "the learner's level must drive how strictly drafts are graded"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reward weighting
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn passing_a_sentence_awards_progress() {
+    let deps = TestDeps::default();
+    *deps.0.sentences.passes.lock().unwrap() = true;
+
+    deps.send("3").await.unwrap();
+    deps.send("I have a pen").await.unwrap();
+
+    assert_eq!(
+        deps.0.users.awards.lock().unwrap().as_slice(),
+        &[REWARD_SENTENCE_PASSED]
+    );
+}
+
+/// The long mode must out-earn the quick one, or grinding vocab stays the
+/// fastest route to the top. Enforced at compile time so a future tweak to the
+/// reward table cannot quietly reintroduce the imbalance.
+const _: () = assert!(REWARD_ROLEPLAY_PASSED > REWARD_VOCAB_ROUND);
+
+// ---------------------------------------------------------------------------
+// Roleplay length
+// ---------------------------------------------------------------------------
+
+/// The learner sends exactly ROLEPLAY_TOTAL_TURNS messages and gets a reply to
+/// every one of them, with the evaluation attached to the last.
+#[tokio::test]
+async fn roleplay_runs_the_full_announced_number_of_turns() {
+    let deps = TestDeps::default();
+    deps.send("4").await.unwrap();
+
+    for turn in 1..ROLEPLAY_TOTAL_TURNS {
+        deps.send(&format!("message {turn}")).await.unwrap();
+        assert!(
+            deps.last_message().contains(&format!("Turn {turn}/")),
+            "turn {turn} mislabelled: {}",
+            deps.last_message()
+        );
+        assert_eq!(
+            *deps.0.roleplay.graded.lock().unwrap(),
+            0,
+            "must not grade before the final turn"
+        );
+    }
+
+    // The final message still gets an in-character reply, plus the verdict.
+    deps.send("final message").await.unwrap();
+
+    let last = deps.last_message();
+    assert!(
+        last.contains("ai says hi"),
+        "final turn must still reply in character: {last}"
+    );
+    assert!(
+        last.contains("จบเซสชัน"),
+        "final turn must carry the evaluation: {last}"
+    );
+    assert_eq!(*deps.0.roleplay.graded.lock().unwrap(), 1);
+    assert_eq!(deps.state(), ChatState::Idle);
+}
+
+// ---------------------------------------------------------------------------
+// Usage report
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn usage_command_reports_tokens_cost_and_remaining_budget() {
+    let deps = TestDeps::default();
+    deps.send("5").await.unwrap();
+
+    let msg = deps.last_message();
+    assert!(msg.contains("4,600"), "total tokens missing: {msg}");
+    assert!(msg.contains("gemini-test"), "model missing: {msg}");
+    assert!(msg.contains('$'), "estimated cost missing: {msg}");
+    assert!(msg.contains("เหลือ"), "remaining budget missing: {msg}");
+    assert_eq!(
+        deps.state(),
+        ChatState::Idle,
+        "reporting must not start a mode"
+    );
+}
+
+#[test]
+fn large_token_counts_are_grouped_for_readability() {
+    assert_eq!(fmt_int(0), "0");
+    assert_eq!(fmt_int(999), "999");
+    assert_eq!(fmt_int(1_000), "1,000");
+    assert_eq!(fmt_int(1_234_567), "1,234,567");
+}
+
+// ---------------------------------------------------------------------------
+// Account deletion
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn deletion_requires_an_explicit_confirmation_phrase() {
+    let deps = TestDeps::default();
+
+    deps.send("ลบข้อมูล").await.unwrap();
+    assert_eq!(deps.state(), ChatState::ConfirmDeletion);
+    assert!(deps.last_message().contains("กู้คืนไม่ได้"));
+
+    // A near miss must not erase anything.
+    deps.send("ลบ").await.unwrap();
+    assert!(
+        deps.0.users.deleted.lock().unwrap().is_empty(),
+        "an unconfirmed reply must never delete"
+    );
+    assert_eq!(
+        deps.state(),
+        ChatState::ConfirmDeletion,
+        "still awaiting confirmation"
+    );
+
+    deps.send(DELETE_CONFIRM_PHRASE).await.unwrap();
+    assert_eq!(
+        deps.0.users.deleted.lock().unwrap().as_slice(),
+        &[USER.to_string()]
+    );
+    assert_eq!(deps.state(), ChatState::Idle);
+}
+
+#[tokio::test]
+async fn deletion_can_be_abandoned_with_the_exit_command() {
+    let deps = TestDeps::default();
+
+    deps.send("ลบข้อมูล").await.unwrap();
+    deps.send("ยกเลิก").await.unwrap();
+
+    assert!(deps.0.users.deleted.lock().unwrap().is_empty());
+    assert_eq!(deps.state(), ChatState::Idle);
+}
+
+/// The confirmation phrase must not be reachable from an ordinary quiz answer.
+#[tokio::test]
+async fn a_quiz_answer_never_triggers_deletion() {
+    let deps = TestDeps::default();
+    deps.send("1").await.unwrap();
+    deps.send("ลบข้อมูล").await.unwrap();
+
+    // The delete command is handled before mode dispatch, so it opens the
+    // confirmation rather than being graded as a guess — but nothing is erased.
+    assert!(deps.0.users.deleted.lock().unwrap().is_empty());
 }
